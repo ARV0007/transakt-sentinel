@@ -6,6 +6,7 @@ dicts: event in -> features -> score -> (maybe) a case to open.
 import logging
 import time
 
+from . import metrics
 from .features import FeatureBuilder, MemoryState, reason_codes
 from .transakt_client import parse_ts
 
@@ -50,6 +51,7 @@ class Scorer:
         """
         payment_id = event["paymentId"]
         if self.store.seen(payment_id):
+            metrics.REPLAYS.inc()
             return None
 
         merchant_id = event["merchantId"]
@@ -67,6 +69,11 @@ class Scorer:
 
         flagged = score >= self.model.threshold
         reasons = reason_codes(feats, amount) if flagged else []
+        metrics.MODEL_SECONDS.observe(latency_ms / 1000)
+        metrics.EVENT_LAG.observe(max(0.0, time.time() - event_ts))
+        metrics.SCORED.labels(flagged=str(flagged).lower()).inc()
+        for r in reasons:
+            metrics.REASONS.labels(reason=r).inc()
         self.store.save(payment_id, merchant_id, amount, event.get("status"),
                         score, flagged, reasons, feats, event_ts)
 

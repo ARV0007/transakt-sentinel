@@ -116,3 +116,16 @@ async def test_case_message_has_no_nan(bundle):
     s = make_scorer(bundle, {})                               # unknown merchant age
     case = await s.handle(evt(1, "x", 4_000_000), 50)
     assert case is None or all(v is None or v == v for v in case["features"].values())
+
+
+async def test_scoring_updates_the_prometheus_metrics(bundle):
+    from prometheus_client import REGISTRY
+    get = lambda name, **labels: REGISTRY.get_sample_value(name, labels) or 0.0
+    before_flagged = get("sentinel_payments_scored_total", flagged="true")
+    before_velocity = get("sentinel_flag_reasons_total", reason="VELOCITY")
+    s = make_scorer(bundle, {"mx": 0})
+    for i in range(20):
+        await s.handle(evt(i, "mx", 80_000), 1000 + i * 2)
+    assert get("sentinel_payments_scored_total", flagged="true") > before_flagged
+    assert get("sentinel_flag_reasons_total", reason="VELOCITY") > before_velocity
+    assert get("sentinel_model_seconds_count") > 0

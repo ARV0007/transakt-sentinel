@@ -1,9 +1,11 @@
 # Transakt Sentinel — architecture
 
-**Version 1.1** · 23 Oct 2026
+**Version 1.2** · 23 Oct 2026
 
-*1.1: scorer history moved to Redis; model file moved from pickle to skops. The runtime
-topology is unchanged apart from the scorer's new Redis dependency.*
+*1.2: MCP server requires a bearer token; scorer history updated atomically by a Lua script;
+Prometheus metrics on every service plus a provisioned Grafana dashboard; analyst decisions
+feed retraining; the investigator is also an A2A agent other agents can call.*
+*1.1: scorer history moved to Redis; model file moved from pickle to skops.*
 
 Sentinel is a fraud-investigation system that sits beside the Transakt payment
 gateway. It scores every settled payment, investigates the risky ones with a
@@ -35,10 +37,13 @@ flowchart LR
         HR --> FIN[finalize]
     end
 
-    VA & AA & MA -->|MCP tools, streamable HTTP| MCP[transakt-mcp<br/>6 read-only tools]
+    VA & AA & MA -->|MCP tools, streamable HTTP, bearer token| MCP[transakt-mcp<br/>6 read-only tools]
     MCP -->|admin JWT, REST| API
     SYN -.->|OpenAI-compatible| LLM[(HF Inference Providers<br/>or any provider)]
     ANALYST([Analyst]) -->|review page :8003| HR
+    EXT([Other AI agents]) -->|A2A JSON-RPC, bearer| INV
+    HR -.decisions /feedback.-> RS
+    RS & INV & MCP -.->|/metrics| PROM[(Prometheus)] --> GRAF[Grafana :3000]
     INV -.traces.-> LS[(LangSmith)]
 ```
 
@@ -50,6 +55,7 @@ flowchart LR
 | `risk-scorer` | 8002 | Scores **every** payment in < 1 ms | Payment volume | If down, events wait in Kafka; payments are unaffected |
 | `investigator` | 8003 | Investigates **flagged** payments, waits for a human | Number of cases | If down, cases wait in Kafka; scoring is unaffected |
 | `transakt-mcp` | 8001 | The only door from the agent into Transakt | Investigator's tool calls | If down, specialists record "could not check" and the case goes to a human |
+| Prometheus / Grafana | 9090 / 3000 | Scrape `/metrics` every 5 s; one provisioned dashboard | — | Monitoring only; nothing depends on them |
 
 The boundaries follow **different speed, different scaling, different failure
 behaviour** — not a wish to have many services.
@@ -70,6 +76,10 @@ behaviour** — not a wish to have many services.
 | Model trained at Docker build | No binary in git; image always matches its feature code | Build takes a few seconds longer |
 | Scorer history in Redis sorted sets (1.1) | Survives restarts and redeploys; shared by replicas; reuses Transakt's Redis on its own DB number | One network hop per payment (~sub-ms locally) |
 | Redis down → scorer **pauses** (offset not committed) | Scoring with an empty history would wave fraud through; events wait safely in Kafka | Flags are delayed during a Redis outage |
+| Bearer token on transakt-mcp (1.2) | It holds ADMIN credentials for Transakt; without auth, anything that reaches :8001 can read every merchant's payments | A shared secret, not OAuth 2.1 — fine for two services we run, not for third-party clients |
+| Lua script for read-and-record (1.2) | One atomic step inside Redis; two replicas can no longer both read before either writes. A naive read-then-write lost 198 of 200 updates under the same test | Logic split across Python and Lua |
+| A2A endpoint on the investigator (1.2) | Lets other agents request an investigation through a standard protocol; reuses the same graph and case table | Another public surface: token-protected, recommends only |
+| Analyst decisions weighted ×25 in retraining (1.2) | Human labels are scarce and the only data about real false alarms | An analyst's mistakes are learned too; review `/feedback` before retraining |
 | Model saved with skops, allow-listed types (1.1) | A pickle runs code on load, so a tampered Hub file could take over the scorer | One allow-list entry to review when the model type changes |
 
 ## Data contracts
@@ -83,12 +93,16 @@ behaviour** — not a wish to have many services.
 Reason codes: `VELOCITY` (≥ 8 payments in 2 min), `AMOUNT_SPIKE` (≥ 10× own median),
 `NEW_MERCHANT_HIGH_VALUE` (< 15 prior payments and ≥ Rs 10,000), `MODEL_ONLY`.
 
-## Known limitations (v1)
+## Known limitations
 
 - Merchant fraud only. Card fraud needs customer/card/device fields Transakt doesn't record.
 - Training data is synthetic, built from the same patterns the simulator plants, so the model's offline metrics are optimistic. Next: mix in PaySim.
 - `finalize` records the decision only; Transakt has no hold-payout endpoint yet.
 - Kafka exists only in local Docker Compose, so the full pipeline demo runs locally, not on Render.
-- `payment.settled` is keyed by payment id, so one merchant's payments spread across partitions. Two scorer
-  replicas could read-then-write the same merchant's history concurrently; a Lua script (or re-keying by
-  merchant) would make that atomic.
+- `payment.settled` is keyed by payment id, so two scorer replicas can process one merchant's payments in a
+  different order than they happened. History updates are atomic (Lua), but ordering isn't guaranteed;
+  re-keying by merchant in Transakt's outbox would fix it.
+- Retraining is a manual `./sentinel.sh retrain` with no holdout check on feedback rows; a production loop
+  would gate deployment on a held-out set of past decisions.
+- The A2A endpoint returns once the recommendation is ready (up to `A2A_TIMEOUT_S`); streaming and push
+  notifications are not implemented.

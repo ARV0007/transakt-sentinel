@@ -5,9 +5,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY feedback ./feedback
 # Train at build time: the image always ships a model matching its own feature
-# code, and no binary model file lives in git. Takes a few seconds.
-RUN python -m app.train --out model/model.skops
+# code, and no binary model file lives in git. Takes a few seconds. Analyst
+# decisions in feedback/feedback.json (from ./sentinel.sh retrain) are folded in;
+# with no file, it trains on synthetic data alone.
+RUN python -m app.train --out model/model.skops --feedback feedback/feedback.json
 
 RUN useradd --create-home sentinel && mkdir -p /data && chown sentinel /data
 USER sentinel

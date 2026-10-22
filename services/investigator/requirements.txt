@@ -9,3 +9,4 @@ langchain-openai>=1.0,<2
 langchain-mcp-adapters>=0.3.2,<0.4
 # See transakt-mcp/requirements.txt for why MCP stays below 2.0 for now.
 mcp>=1.27,<2
+prometheus_client>=0.20

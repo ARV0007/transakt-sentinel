@@ -1,0 +1,14 @@
+# Scrapes the three Sentinel services every 5 s. Service names are hostnames
+# inside the compose network, the same way Transakt reaches "postgres".
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: risk-scorer
+    metrics_path: /metrics/          # mounted ASGI app: trailing slash avoids a redirect
+    static_configs: [{targets: ["risk-scorer:8002"]}]
+  - job_name: investigator
+    static_configs: [{targets: ["investigator:8003"]}]
+  - job_name: transakt-mcp
+    static_configs: [{targets: ["transakt-mcp:8001"]}]

@@ -35,9 +35,10 @@ MAX_PER_MERCHANT = 2000
 
 
 # ---------------------------------------------------------------- state backends
-# Both answer two questions: "what happened in the last 24 h before ts?" and
-# "how many payments have we ever seen?", then record the new payment.
-# history() returns events as (ts_seconds, amount_paise, status).
+# Both expose ONE operation, observe(): "give me this merchant's last 24 h and
+# its all-time count as they were BEFORE this payment, and record this payment"
+# — read and write together, so no other scorer can slip in between them.
+# Events come back as (ts_seconds, amount_paise, status).
 
 
 class MemoryState:
@@ -45,66 +46,72 @@ class MemoryState:
         self.events = defaultdict(lambda: deque(maxlen=MAX_PER_MERCHANT))
         self.total = defaultdict(int)
 
-    async def history(self, merchant_id, ts, exclude_payment_id=None):
+    async def observe(self, merchant_id, ts, payment_id, amount, status):
         q = self.events[merchant_id]
         while q and ts - q[0][1] > KEEP_SECONDS:
             q.popleft()
-        return ([e[1:] for e in q if e[1] <= ts and e[0] != exclude_payment_id],
-                self.total[merchant_id] - any(e[0] == exclude_payment_id for e in q))
+        replay = any(e[0] == payment_id for e in q)
+        prior = [e[1:] for e in q if e[1] <= ts and e[0] != payment_id]
+        total_before = self.total[merchant_id] - replay
+        if not replay:
+            q.append((payment_id, ts, amount, status))
+            self.total[merchant_id] += 1
+        return prior, total_before
 
-    async def record(self, merchant_id, payment_id, ts, amount, status):
-        if any(e[0] == payment_id for e in self.events[merchant_id]):
-            return                                      # replay: already recorded
-        self.events[merchant_id].append((payment_id, ts, amount, status))
-        self.total[merchant_id] += 1
+
+# Runs inside Redis as one step: nothing else touches these keys until it
+# returns. That is what makes two scorer replicas safe on the same merchant.
+#   KEYS: events zset, count
+#   ARGV: ts, keep_seconds, payment_id, member, max_events, events_ttl, count_ttl
+OBSERVE_LUA = """
+local ts = tonumber(ARGV[1])
+local floor = ts - tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. floor)
+local rows = redis.call('ZRANGEBYSCORE', KEYS[1], floor, ts, 'WITHSCORES')
+local total = tonumber(redis.call('GET', KEYS[2]) or '0')
+local prefix = ARGV[3] .. '|'
+local prior, replay = {}, 0
+for i = 1, #rows, 2 do
+  if string.sub(rows[i], 1, #prefix) == prefix then
+    replay = 1                       -- a Kafka redelivery: never compare a payment with itself
+  else
+    prior[#prior + 1] = rows[i]
+    prior[#prior + 1] = rows[i + 1]
+  end
+end
+if redis.call('ZADD', KEYS[1], ts, ARGV[4]) == 1 then
+  redis.call('INCR', KEYS[2])        -- only a genuinely new payment is counted
+end
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -tonumber(ARGV[5]) - 1)
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[6]))
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[7]))
+return {total - replay, prior}
+"""
 
 
 class RedisState:
     """
-    Key layout (all under one prefix, on its own Redis database):
+    Key layout (on its own Redis database):
       sentinel:events:<merchant>  sorted set, score = ts, member = "<payment>|<amount>|<status>"
       sentinel:count:<merchant>   all-time payment count
-
-    The payment id inside the member makes a replayed event the same member,
-    so ZADD on a redelivery doesn't double-count it (the INCR is guarded below).
     """
 
     def __init__(self, redis, prefix="sentinel"):
         self.r = redis
         self.prefix = prefix
+        self.script = redis.register_script(OBSERVE_LUA)
 
-    def _k(self, kind, merchant_id):
-        return f"{self.prefix}:{kind}:{merchant_id}"
-
-    async def history(self, merchant_id, ts, exclude_payment_id=None):
-        ev = self._k("events", merchant_id)
-        async with self.r.pipeline(transaction=True) as p:
-            p.zremrangebyscore(ev, "-inf", ts - KEEP_SECONDS)
-            p.zrangebyscore(ev, ts - KEEP_SECONDS, ts, withscores=True)
-            p.get(self._k("count", merchant_id))
-            _, rows, total = await p.execute()
-        events, replayed = [], 0
-        for member, score in rows:
-            member = member.decode() if isinstance(member, bytes) else member
-            pid, amount, status = member.split("|", 2)
-            if pid == exclude_payment_id:
-                # A replay after a crash between record() and the score being
-                # saved. Don't compare the payment with itself.
-                replayed = 1
-                continue
-            events.append((float(score), int(amount), status))
-        return events, int(total or 0) - replayed
-
-    async def record(self, merchant_id, payment_id, ts, amount, status):
-        ev, cnt = self._k("events", merchant_id), self._k("count", merchant_id)
-        added = await self.r.zadd(ev, {f"{payment_id}|{amount}|{status}": ts})
-        async with self.r.pipeline(transaction=True) as p:
-            if added:                                   # a replay adds nothing and counts nothing
-                p.incr(cnt)
-            p.zremrangebyrank(ev, 0, -MAX_PER_MERCHANT - 1)
-            p.expire(ev, KEEP_SECONDS + 3600)
-            p.expire(cnt, 30 * 24 * 3600)
-            await p.execute()
+    async def observe(self, merchant_id, ts, payment_id, amount, status):
+        keys = [f"{self.prefix}:events:{merchant_id}", f"{self.prefix}:count:{merchant_id}"]
+        total, rows = await self.script(keys=keys, args=[
+            ts, KEEP_SECONDS, payment_id, f"{payment_id}|{amount}|{status}",
+            MAX_PER_MERCHANT, KEEP_SECONDS + 3600, 30 * 24 * 3600])
+        prior = []
+        for i in range(0, len(rows), 2):
+            member = rows[i].decode() if isinstance(rows[i], bytes) else rows[i]
+            _, amt, st = member.split("|", 2)
+            prior.append((float(rows[i + 1]), int(amt), st))
+        return prior, int(total)
 
 
 def state_from_env(url):
@@ -126,11 +133,12 @@ class FeatureBuilder:
         """
         Features for ONE payment, then remember it.
 
-        Order matters: compare the payment against history BEFORE adding it, or
-        a Rs 50,000 spike would raise its own baseline and partly hide itself.
+        observe() returns history as it was BEFORE this payment (and records the
+        payment in the same step), so a Rs 50,000 spike is compared with the old
+        baseline rather than one it has already raised.
         """
         payment_id = payment_id or f"anon-{ts}-{amount_paise}"
-        prior, total_seen = await self.state.history(merchant_id, ts, payment_id)
+        prior, total_seen = await self.state.observe(merchant_id, ts, payment_id, amount_paise, status)
         prior_amounts = [a for _, a, _ in prior]
 
         recent_2m = [e for e in prior if ts - e[0] <= 120]
@@ -147,7 +155,6 @@ class FeatureBuilder:
             "failed_ratio_10m": failed_10m / (len(recent_10m) + 1),
         }
 
-        await self.state.record(merchant_id, payment_id, ts, amount_paise, status)
         return feats
 
 

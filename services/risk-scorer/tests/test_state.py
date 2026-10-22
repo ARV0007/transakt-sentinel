@@ -57,3 +57,46 @@ async def test_old_events_expire_from_the_window():
     await fb.compute("m", 0, 50_000, "CAPTURED", payment_id="old")
     f = await fb.compute("m", 25 * 3600, 50_000, "CAPTURED", payment_id="new")
     assert f["count_10m"] == 1 and f["history_count"] == 1   # all-time count remembers; the window doesn't
+
+
+# ---------------------------------------------------------------- real Redis
+# Set REDIS_TEST_URL (CI runs a Redis service container) to run these against a
+# real server; fakeredis can't show what concurrency does to a real one.
+
+import asyncio
+import os
+
+real = pytest.mark.skipif(not os.environ.get("REDIS_TEST_URL"), reason="REDIS_TEST_URL not set")
+
+
+@real
+async def test_two_replicas_hammering_one_merchant_lose_nothing():
+    import redis.asyncio as aioredis
+    url = os.environ["REDIS_TEST_URL"]
+    a, b = aioredis.from_url(url), aioredis.from_url(url)
+    await a.flushdb()
+    replica_1, replica_2 = RedisState(a, prefix="t"), RedisState(b, prefix="t")
+    n = 200
+    results = await asyncio.gather(*[
+        (replica_1 if i % 2 else replica_2).observe("m", 1000 + i * 0.01, f"p{i}", 50_000, "CAPTURED")
+        for i in range(n)])
+    counts_before = sorted(total for _, total in results)
+    # Atomic read+write: every payment saw a different "count before me", 0..n-1.
+    # With a separate read and write, two payments could both see the same count.
+    assert counts_before == list(range(n))
+    assert int(await a.get("t:count:m")) == n
+    await a.aclose()
+    await b.aclose()
+
+
+@real
+async def test_real_redis_matches_memory():
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(os.environ["REDIS_TEST_URL"])
+    await r.flushdb()
+    mem, red = FeatureBuilder(MemoryState()), FeatureBuilder(RedisState(r, prefix="t2"))
+    for i, (m, ts, amt, st) in enumerate(TRAFFIC):
+        x = await mem.compute(m, ts, amt, st, payment_id=f"p{i}")
+        y = await red.compute(m, ts, amt, st, payment_id=f"p{i}")
+        assert {k: round(v, 6) for k, v in x.items() if v == v} == {k: round(v, 6) for k, v in y.items() if v == v}
+    await r.aclose()

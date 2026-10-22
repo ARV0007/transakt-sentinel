@@ -5,7 +5,7 @@ Every settled payment is scored by a fast ML model; risky ones are investigated 
 LangGraph agent that gathers evidence through **MCP** tools and writes a recommendation
 with an LLM — then **stops and waits for a human analyst**. Transakt itself is not modified.
 
-`Python 3.12` · `LangGraph` · `LangChain` · `MCP` · `FastAPI` · `Kafka` · `scikit-learn` · `Hugging Face` · `LangSmith` · `Docker`
+`Python 3.12` · `LangGraph` · `LangChain` · `MCP` · `A2A` · `FastAPI` · `Kafka` · `Redis` · `scikit-learn` · `Hugging Face` · `LangSmith` · `Prometheus` · `Grafana` · `Docker`
 
 ```
 Transakt ──payment.settled──► risk-scorer ──fraud.cases──► investigator ──► analyst
@@ -30,6 +30,16 @@ Transakt ──payment.settled──► risk-scorer ──fraud.cases──► i
   clean slate; a replayed Kafka event is never counted twice.
 - **No pickles.** The model is saved with skops and loaded through a type allow-list, so a tampered
   file from the Hub is refused instead of executed.
+- **Concurrency-safe state.** History is read and recorded in one Lua script inside Redis. A test with two
+  replicas and 200 concurrent payments keeps all 200; a naive read-then-write version kept 2.
+- **Agent-to-agent (A2A).** Other AI agents can discover Sentinel at `/.well-known/agent-card.json` and ask it
+  to investigate a payment — they get a recommendation, a human still decides.
+- **Humans teach the model.** Analyst decisions export as labels; `./sentinel.sh retrain` folds them in. A test
+  shows a repeatedly dismissed pattern stops being flagged while real fraud is still caught.
+- **Observable.** Prometheus metrics on every service and a provisioned Grafana dashboard: flag rate, scoring
+  lag, recommendations, analyst overrides, MCP tool latency.
+- **Secured internals.** The MCP server holds admin credentials, so it requires a bearer token
+  (constant-time compared); tokens are generated into `.env` and never printed.
 - **Measured, not claimed.** A simulator plants labelled fraud; `eval/evaluate.py` reports
   precision/recall, incident detection, false alarms and how much traffic reached the LLM.
 - **Event-driven microservices** split by speed, scaling and failure behaviour, at-least-once
@@ -65,7 +75,18 @@ You need Docker Desktop, Python 3.12 and Transakt cloned next to this repo
 ./sentinel.sh eval        # grades the run -> eval/results/latest.md
 ```
 
-Then open **http://localhost:8003** to review cases. `./sentinel.sh demo` runs all four.
+Then open **http://localhost:8003** to review cases and **http://localhost:3000** for the Grafana
+dashboard. `./sentinel.sh demo` runs all four. After deciding a few cases, `./sentinel.sh retrain`
+retrains the scorer on your decisions.
+
+**Ask Sentinel from another agent (A2A):**
+
+```bash
+TOKEN=$(grep ^A2A_TOKEN .env | cut -d= -f2)
+curl -s localhost:8003/a2a -H "Authorization: Bearer $TOKEN" -H "A2A-Version: 1.0" \
+  -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage",
+  "params":{"message":{"messageId":"1","role":"ROLE_USER","parts":[{"data":{"payment_id":"<id>"}}]}}}'
+```
 
 **Turn the LLM on (optional):** put a Hugging Face token in `.env` as `LLM_API_KEY`, then
 `./sentinel.sh up` again. Without one, deterministic rules write the recommendations and
@@ -90,6 +111,7 @@ CI runs all unit suites plus the end-to-end run on every push.
 | `simulator/` | Plants labelled fraud into local Transakt traffic |
 | `eval/` | Grades a run against the simulator's labels |
 | `e2e/` | Fake Transakt + full-pipeline test used by CI |
+| `monitoring/` | Prometheus config, Grafana data source and dashboard (provisioned) |
 | `docs/` | `architecture.md`, `notes.md`, `WORKLOG.md`, `UNDERSTANDING.md` |
 
 ## Honest limitations

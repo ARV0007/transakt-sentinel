@@ -46,3 +46,29 @@ def test_load_bundle_uses_the_local_file(saved, monkeypatch):
     monkeypatch.delenv("HF_MODEL_REPO", raising=False)
     b = load_bundle()
     assert b["source"] == "local" and b["version"]
+
+
+def test_analyst_feedback_teaches_the_model(tmp_path):
+    import json
+    import math
+    from app.train import train
+    # A pattern the synthetic data calls fraud: a velocity burst from an established shop.
+    # Suppose analysts keep dismissing it (say, a flash sale every evening).
+    flash_sale = {"count_2m": 14, "count_10m": 20, "history_count": 120, "amount_ratio": 1.0,
+                  "log_amount": 4.7, "merchant_age_min": 50_000.0, "failed_ratio_10m": 0.0}
+    path = tmp_path / "feedback.json"
+    path.write_text(json.dumps([{"features": flash_sale, "label": 0}] * 12))
+    base, tuned = train(), train(feedback_path=str(path))
+    row = [[flash_sale[k] for k in base["feature_order"]]]
+    assert base["model"].predict_proba(row)[0, 1] > 0.5           # flagged before
+    assert tuned["model"].predict_proba(row)[0, 1] < 0.5          # learned from the analysts
+    assert tuned["metrics"]["feedback_rows"] == 12 and tuned["version"].endswith("+fb12")
+    assert tuned["metrics"]["agrees_with_analysts_after"] == "12/12"
+    # ...without forgetting real fraud: a new merchant moving Rs 30,000 a time
+    blitz = [[3, 3, 2, math.nan, 6.48, 4.0, 0.0]]
+    assert tuned["model"].predict_proba(blitz)[0, 1] > 0.5
+
+
+def test_missing_feedback_file_means_none(tmp_path):
+    from app.train import train
+    assert train(feedback_path=str(tmp_path / "nope.json"))["metrics"]["feedback_rows"] == 0

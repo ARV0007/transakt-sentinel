@@ -114,13 +114,52 @@ def make_dataset(n=40_000, seed=13):
     return np.array(X, dtype=float), np.array(y)
 
 
-def train(seed=13):
+# ---------------------------------------------------------------- analyst feedback
+#
+# Every case an analyst decides is a label a human checked: the most valuable
+# training data the system ever sees, and the rarest. Each one is weighted as
+# FEEDBACK_WEIGHT synthetic rows so a few dozen decisions can move the model,
+# especially on the false alarms (DISMISS) that synthetic data never predicted.
+
+FEEDBACK_WEIGHT = 25
+
+
+def load_feedback(path):
+    """Rows from the investigator's GET /feedback. A missing file means none yet."""
+    if not path or not os.path.exists(path):
+        return np.empty((0, len(FEATURE_ORDER))), np.empty(0, dtype=int)
+    with open(path) as f:
+        rows = json.load(f)
+    X = [[math.nan if r["features"].get(c) is None else float(r["features"][c]) for c in FEATURE_ORDER]
+         for r in rows]
+    y = [int(r["label"]) for r in rows]
+    return np.array(X, dtype=float).reshape(-1, len(FEATURE_ORDER)), np.array(y, dtype=int)
+
+
+def agreement(model, X, y):
+    if not len(y):
+        return None
+    return int(((model.predict_proba(X)[:, 1] >= 0.5).astype(int) == y).sum())
+
+
+def train(seed=13, feedback_path=None):
     X, y = make_dataset(seed=seed)
     X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.25, random_state=seed, stratify=y)
-    # NaN-aware: "merchant age unknown" and "too little history for a ratio" are
-    # information, not errors, and this model handles missing values natively.
-    model = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.1, random_state=seed)
-    model.fit(X_tr, y_tr)
+    X_fb, y_fb = load_feedback(feedback_path)
+
+    def fit(with_feedback):
+        # NaN-aware: "merchant age unknown" and "too little history for a ratio"
+        # are information, not errors, and this model handles missing values natively.
+        m = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.1, random_state=seed)
+        if with_feedback and len(y_fb):
+            m.fit(np.vstack([X_tr, X_fb]), np.concatenate([y_tr, y_fb]),
+                  sample_weight=np.concatenate([np.ones(len(y_tr)), np.full(len(y_fb), FEEDBACK_WEIGHT)]))
+        else:
+            m.fit(X_tr, y_tr)
+        return m
+
+    model = fit(with_feedback=True)
+    baseline = fit(with_feedback=False) if len(y_fb) else model
     proba = model.predict_proba(X_te)[:, 1]
     pred = (proba >= 0.5).astype(int)
     metrics = {
@@ -130,9 +169,16 @@ def train(seed=13):
         "recall_at_0.5": round(float(recall_score(y_te, pred)), 4),
         "test_rows": int(len(y_te)),
         "fraud_share": round(float(y.mean()), 4),
+        "feedback_rows": int(len(y_fb)),
     }
+    if len(y_fb):
+        # In-sample, so optimistic: these are the very rows it trained on. It
+        # still answers the useful question — did the model take the hint?
+        metrics["agrees_with_analysts_before"] = f"{agreement(baseline, X_fb, y_fb)}/{len(y_fb)}"
+        metrics["agrees_with_analysts_after"] = f"{agreement(model, X_fb, y_fb)}/{len(y_fb)}"
+    version = MODEL_VERSION + (f"+fb{len(y_fb)}" if len(y_fb) else "")
     return {"model": model, "feature_order": FEATURE_ORDER, "threshold": 0.5,
-            "version": MODEL_VERSION, "metrics": metrics}
+            "version": version, "metrics": metrics}
 
 
 MODEL_CARD = """---
@@ -163,9 +209,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="model/model.skops")
     ap.add_argument("--push-to-hub", metavar="REPO_ID", help="e.g. yourname/transakt-sentinel-risk")
+    ap.add_argument("--feedback", metavar="JSON", help="analyst decisions from the investigator's GET /feedback")
     args = ap.parse_args()
 
-    bundle = train()
+    bundle = train(feedback_path=args.feedback)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     sio.dump(bundle, args.out)
     print(f"saved {args.out}  metrics={json.dumps(bundle['metrics'])}")

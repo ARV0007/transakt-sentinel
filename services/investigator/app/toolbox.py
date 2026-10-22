@@ -34,9 +34,12 @@ def _to_dict(result):
 
 
 class MCPToolbox:
-    def __init__(self, url):
+    def __init__(self, url, token=None):
         self.url = url
-        self.client = MultiServerMCPClient({"transakt": {"url": url, "transport": "streamable_http"}})
+        conn = {"url": url, "transport": "streamable_http"}
+        if token:
+            conn["headers"] = {"Authorization": f"Bearer {token}"}
+        self.client = MultiServerMCPClient({"transakt": conn})
         self._tools = None
 
     async def tools(self):

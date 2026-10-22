@@ -19,6 +19,13 @@ MERCHANTS = {
 }
 
 
+# payment id -> what get_payment returns
+PAYMENTS = {
+    "11111111-2222-3333-4444-555555555555": {"id": "11111111-2222-3333-4444-555555555555", "merchantId": "burst",
+                                             "amountPaise": 80_000, "currency": "INR", "status": "CAPTURED"},
+}
+
+
 class FakeTools:
     def __init__(self, broken=()):
         self.calls = []
@@ -28,6 +35,10 @@ class FakeTools:
         self.calls.append((name, args))
         if name in self.broken or "*" in self.broken:
             raise ToolError(f"{name} failed: connection refused")
+        if name == "get_payment":
+            if args["payment_id"] not in PAYMENTS:
+                raise ToolError(f"payment {args['payment_id']} not found")
+            return dict(PAYMENTS[args["payment_id"]])
         m = MERCHANTS[args["merchant_id"]]
         if name == "merchant_activity":
             return dict(m["activity30" if args["window_minutes"] <= 30 else "activity1440"],

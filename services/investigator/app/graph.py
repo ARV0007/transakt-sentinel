@@ -20,6 +20,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send, interrupt
 
+from . import metrics
 from .llm import synthesize
 from .toolbox import ToolError
 
@@ -141,6 +142,7 @@ def build_graph(tools, llm, checkpointer=None):
                 result = await ANALYSTS[name](state, tools)
             except (ToolError, KeyError, TypeError) as e:
                 result = {"error": str(e)[:300]}
+                metrics.TOOL_ERRORS.labels(specialist=name).inc()
             return {"findings": {name: result}}
         run.__name__ = name
         return run
@@ -153,7 +155,11 @@ def build_graph(tools, llm, checkpointer=None):
             "reason_codes": state.get("reasons"),
             "findings": state.get("findings", {}),
         }
-        return {"recommendation": await synthesize(llm, facts, state.get("findings", {}))}
+        rec = await synthesize(llm, facts, state.get("findings", {}))
+        metrics.RECOMMENDATIONS.labels(action=rec["action"], source=rec["source"]).inc()
+        if not rec.get("grounding", {}).get("ok", True):
+            metrics.GROUNDING_WARNINGS.inc()
+        return {"recommendation": rec}
 
     def human_review(state):
         answer = interrupt({

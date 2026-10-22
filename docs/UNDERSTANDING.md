@@ -154,3 +154,25 @@ skops, which refuses to build any type that isn't on a short allow-list.
 4. `payment.settled` is keyed by payment id, not merchant. Why does that matter once you run two
    scorer replicas?
 5. Someone says "just load the model with joblib, it's from our own Hub repo". What's your answer?
+
+---
+
+## Chapter 9 — Production hardening (v1.2)
+
+Five changes, each closing a gap a reviewer would find:
+
+- **The MCP server needs a password now.** It holds admin access to Transakt, so leaving it open meant
+  anyone on the network could read every merchant's payments.
+- **Redis updates happen in one step** (a Lua script), so two scorers can't trip over each other.
+- **Every service reports numbers** that Prometheus collects and Grafana draws.
+- **Analysts teach the model.** Their confirm/dismiss decisions become training labels.
+- **Other agents can ask Sentinel for help** over A2A — the agent-to-agent protocol.
+
+**Counter-questions**
+1. Why does transakt-mcp refuse to *start* without a token, instead of starting and warning?
+2. Two scorers, one merchant, a naive read-then-write. Walk through how 200 payments become a count of 2.
+3. Why is `/metrics` left open on the MCP server when everything else needs the token?
+4. An analyst dismisses a real fraud case by mistake, twice. What happens on the next retrain, and what
+   safeguard would you add?
+5. MCP and A2A both look like "JSON over HTTP". What's the actual difference, and where does each appear here?
+6. The A2A caller gets back `HOLD_PAYOUT`. Has anything been held? Who decides?

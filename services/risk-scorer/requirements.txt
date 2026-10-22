@@ -7,3 +7,4 @@ skops>=0.10
 numpy>=2
 huggingface_hub>=0.25
 redis>=5
+prometheus_client>=0.20

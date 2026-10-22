@@ -21,10 +21,13 @@ from pathlib import Path
 
 import aiosqlite
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field
 
+from . import metrics
+from .a2a_agent import mount_a2a
 from .graph import DECISIONS, build_graph
 from .llm import build_llm
 from .service import CaseError, CaseService
@@ -77,7 +80,9 @@ async def lifespan(app):
     conn = await aiosqlite.connect(DATA_DIR / "checkpoints.db")
     checkpointer = AsyncSqliteSaver(conn)
     await checkpointer.setup()
-    tools = app.state.tools_override or MCPToolbox(os.environ.get("MCP_URL", "http://localhost:8001/mcp"))
+    tools = app.state.tools_override or MCPToolbox(os.environ.get("MCP_URL", "http://localhost:8001/mcp"),
+                                                   os.environ.get("MCP_TOKEN"))
+    app.state.tools = tools          # also used by the A2A agent to look payments up
     graph = build_graph(tools, app.state.llm_override or build_llm(), checkpointer)
     store = CaseStore(str(DATA_DIR / "cases.db"))
     app.state.service = CaseService(store, graph, int(os.environ.get("MAX_CONCURRENT_CASES", "4")))
@@ -96,6 +101,7 @@ async def lifespan(app):
 app = FastAPI(title="investigator", lifespan=lifespan)
 app.state.tools_override = None     # tests inject fakes here
 app.state.llm_override = None
+mount_a2a(app)                      # /.well-known/agent-card.json and POST /a2a
 
 
 class CaseIn(BaseModel):
@@ -128,6 +134,36 @@ def ui():
 def health():
     return {"status": "UP", "service": "investigator", "cases": _svc().store.stats(),
             "llm": "configured" if (os.environ.get("LLM_API_KEY") or os.environ.get("HF_TOKEN")) else "rules-only"}
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    # Case counts by status are read from the table at scrape time, so the
+    # gauge is always the truth rather than a running tally that can drift.
+    counts = _svc().store.stats()
+    for status in ("INVESTIGATING", "AWAITING_REVIEW", "DECIDING", "CLOSED", "ERROR"):
+        metrics.CASES_BY_STATUS.labels(status=status).set(counts.get(status, 0))
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/feedback")
+def feedback(limit: int = 5000):
+    """
+    Analyst decisions as training labels, for `./sentinel.sh retrain`.
+
+    One row per decided case: the features the scorer saw on the payment that
+    opened it, and the human's verdict. CONFIRM_FRAUD -> 1, DISMISS -> 0.
+    """
+    rows = []
+    for c in _svc().store.list("CLOSED", min(limit, 20000)):
+        d, t = c.get("decision") or {}, c.get("trigger") or {}
+        if d.get("decision") not in DECISIONS or not t.get("features"):
+            continue
+        rows.append({"case_id": c["id"], "payment_id": t["payment_id"], "features": t["features"],
+                     "label": 1 if d["decision"] == "CONFIRM_FRAUD" else 0,
+                     "recommended": (c.get("recommendation") or {}).get("action"),
+                     "model_version": t.get("model_version"), "decided_at": c["updated_at"]})
+    return rows
 
 
 @app.get("/cases")

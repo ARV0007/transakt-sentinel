@@ -14,12 +14,16 @@ The descriptions below are not comments for humans only. An LLM chooses tools
 by reading them, so they say what the tool is FOR, not just what it returns.
 """
 
+import functools
+import hmac
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from starlette.responses import JSONResponse, Response
 
 from .analytics import activity_summary, amount_profile
 from .transakt_client import TransaktClient
@@ -44,11 +48,37 @@ mcp = FastMCP(
 )
 
 
+TOOL_CALLS = Counter("sentinel_mcp_tool_calls_total", "MCP tool calls", ["tool", "outcome"])
+TOOL_SECONDS = Histogram("sentinel_mcp_tool_seconds", "MCP tool call duration, including Transakt",
+                         ["tool"], buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5))
+
+
+def measured(fn):
+    """Counts and times every call. functools.wraps keeps the signature, which
+    FastMCP reads to build the tool's input schema."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        started, outcome = time.perf_counter(), "ok"
+        try:
+            result = await fn(*args, **kwargs)
+            if isinstance(result, dict) and "error" in result:
+                outcome = "not_found"
+            return result
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            TOOL_CALLS.labels(tool=fn.__name__, outcome=outcome).inc()
+            TOOL_SECONDS.labels(tool=fn.__name__).observe(time.perf_counter() - started)
+    return wrapper
+
+
 def _since(minutes):
     return datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
 
 @mcp.tool()
+@measured
 async def get_payment(payment_id: str) -> dict:
     """Fetch one payment by id: merchant, amount in paise, currency, status
     (PENDING, CAPTURED or FAILED) and creation time. Use it to see the facts of
@@ -58,6 +88,7 @@ async def get_payment(payment_id: str) -> dict:
 
 
 @mcp.tool()
+@measured
 async def get_payment_ledger(payment_id: str) -> dict:
     """The double-entry ledger rows for one payment. A captured payment has a
     balancing CREDIT and DEBIT; a failed one has none because no money moved."""
@@ -66,6 +97,7 @@ async def get_payment_ledger(payment_id: str) -> dict:
 
 
 @mcp.tool()
+@measured
 async def get_merchant(merchant_id: str) -> dict:
     """A merchant's profile: name, business name and when the account was
     created. Account age matters: brand-new merchants moving large amounts are
@@ -88,6 +120,7 @@ async def get_merchant(merchant_id: str) -> dict:
 
 
 @mcp.tool()
+@measured
 async def list_merchant_payments(merchant_id: str, window_minutes: int = 60, limit: int = 50) -> dict:
     """A merchant's payments in the last `window_minutes`, newest first, at most
     `limit` of them. Use it to eyeball the raw sequence of payments."""
@@ -98,6 +131,7 @@ async def list_merchant_payments(merchant_id: str, window_minutes: int = 60, lim
 
 
 @mcp.tool()
+@measured
 async def merchant_activity(merchant_id: str, window_minutes: int = 30) -> dict:
     """How busy a merchant has been: payment count, failures, average per
     minute, and the most payments inside ANY 2-minute stretch. A high 2-minute
@@ -108,6 +142,7 @@ async def merchant_activity(merchant_id: str, window_minutes: int = 30) -> dict:
 
 
 @mcp.tool()
+@measured
 async def merchant_amount_profile(merchant_id: str, window_minutes: int = 1440,
                                   exclude_payment_id: str | None = None) -> dict:
     """A merchant's normal ticket size over the window: median, 95th percentile
@@ -119,13 +154,60 @@ async def merchant_amount_profile(merchant_id: str, window_minutes: int = 1440,
             **amount_profile(rows, exclude_payment_id)}
 
 
+@mcp.custom_route("/metrics", methods=["GET"])
+async def prometheus_metrics(_: Request) -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "UP", "service": "transakt-mcp"})
 
 
+# ---------------------------------------------------------------- auth
+#
+# This server holds ADMIN credentials for Transakt and will read any merchant's
+# payments for whoever asks. Without a check, anything that can reach port 8001
+# gets admin read access to the whole gateway. So every request except /health
+# must carry `Authorization: Bearer <MCP_TOKEN>`.
+#
+# A shared token between two services we run is the right size for this. The
+# MCP spec's full answer for third-party clients is OAuth 2.1, with this server
+# as a resource server; that is the upgrade path if outside agents ever connect.
+
+OPEN_PATHS = {"/health", "/metrics"}     # counts and timings only, no payment data
+
+
+class BearerAuth:
+    """Plain ASGI middleware, so it also covers the streaming responses."""
+
+    def __init__(self, app, token):
+        if not token:
+            raise RuntimeError("MCP_TOKEN is not set; refusing to start an unauthenticated admin proxy")
+        self.app = app
+        self.expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] not in OPEN_PATHS:
+            got = dict(scope["headers"]).get(b"authorization", b"")
+            # compare_digest: constant time, so the token can't be guessed a
+            # character at a time from response timings (same idea as
+            # MessageDigest.isEqual in Transakt's ApiKeyHasher).
+            if not hmac.compare_digest(got, self.expected):
+                await JSONResponse({"error": "missing or invalid bearer token"}, status_code=401,
+                                   headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def build_app(token=None):
+    return BearerAuth(mcp.streamable_http_app(), token if token is not None else os.environ.get("MCP_TOKEN"))
+
+
 def main():
-    mcp.run(transport="streamable-http")
+    import uvicorn
+    uvicorn.run(build_app(), host=os.environ.get("MCP_HOST", "0.0.0.0"),
+                port=int(os.environ.get("MCP_PORT", "8001")))
 
 
 if __name__ == "__main__":

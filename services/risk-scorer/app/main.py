@@ -17,6 +17,9 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query
+from prometheus_client import make_asgi_app
+
+from . import metrics
 
 from .features import state_from_env
 from .model import RiskModel, load_bundle
@@ -87,6 +90,9 @@ def build_scorer():
 @asynccontextmanager
 async def lifespan(app):
     app.state.scorer = build_scorer()
+    m = app.state.scorer.model
+    metrics.MODEL_INFO.labels(version=m.version, source=m.source,
+                              state=type(app.state.scorer.features.state).__name__).set(1)
     stop = asyncio.Event()
     task = asyncio.create_task(consume_forever(app.state.scorer, stop)) if KAFKA else None
     if not KAFKA:
@@ -98,6 +104,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="risk-scorer", lifespan=lifespan)
+app.mount("/metrics", make_asgi_app())
 
 
 @app.get("/health")

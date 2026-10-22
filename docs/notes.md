@@ -114,3 +114,59 @@ model file you download is therefore only as safe as everyone who can push to th
 skops stores plain data and, on load, lists every type in the file; we refuse anything not on a
 one-line allow-list (`TreePredictor`). A test dumps a file containing an unknown class and checks
 it is rejected.
+
+## Securing the MCP server (v1.2)
+
+transakt-mcp logs into Transakt as an ADMIN, so it is an admin proxy: whatever can reach port
+8001 can read every merchant's payments. It now refuses any request without
+`Authorization: Bearer <MCP_TOKEN>` (except `/health` and `/metrics`, which carry no data). The
+comparison is `hmac.compare_digest` — constant time, same idea as Transakt's `MessageDigest.isEqual`.
+And it refuses to *start* without a token, so a misconfigured deploy fails loudly instead of running open.
+
+The MCP spec's answer for outside clients is OAuth 2.1 with the server as a resource server. A shared
+secret is the right size for two services we run ourselves; OAuth is the upgrade path.
+
+## Atomic read-and-record with Lua (v1.2)
+
+"Read the history, then record the payment" as two Redis calls has a gap. Two scorer replicas
+working on the same merchant can both read before either writes — both see "5 payments so far",
+both write "6". A test makes this concrete: 200 concurrent payments through a naive read-then-write
+ended with a count of **2**. Through the Lua script, all 200 are kept and every payment sees a
+different "count before me".
+
+Redis runs a Lua script as one step: nothing else touches those keys until it returns. The script
+trims the window, reads the history, skips the payment itself on a replay, adds it, increments the
+counter only if the add was new, caps and sets expiries — then returns the history *as it was before*.
+
+## Metrics: counters, gauges, histograms
+
+- **Counter** — only goes up (payments scored, cases opened). Prometheus's `rate()` turns it into "per second".
+- **Gauge** — goes up and down (cases by status). Ours is set from the database at scrape time, so it
+  can't drift from the truth.
+- **Histogram** — counts observations into buckets (scoring lag, investigation time).
+  `histogram_quantile(0.95, ...)` estimates the p95 from those buckets.
+
+Prometheus *pulls*: every 5 s it GETs `/metrics` from each service. Grafana only reads Prometheus.
+Neither can break the pipeline — if they're down, nothing else notices.
+
+## The feedback loop
+
+The synthetic training data encodes our guesses about fraud. Analyst decisions are the only data
+about how wrong those guesses are — especially false alarms, which synthetic data never predicts.
+`GET /feedback` exports each decided case as (features at the time, human verdict), and retraining
+weights each row 25× because there are so few of them.
+
+Risk worth naming: the model learns analysts' mistakes too. A real system would hold out recent
+decisions and only ship a retrained model that does at least as well on them.
+
+## A2A vs MCP
+
+| | MCP | A2A |
+|---|---|---|
+| Who's calling whom | an agent → a **tool** | an agent → another **agent** |
+| In Sentinel | investigator → transakt-mcp | other agents → investigator |
+| Discovery | `tools/list` | `/.well-known/agent-card.json` |
+| Unit of work | a tool call, answered at once | a **task** with a lifecycle (submitted → working → completed/rejected/failed) |
+
+Sentinel's A2A skill runs the same graph an analyst sees and returns the recommendation as a task
+artifact. It is a recommendation, not a decision: the case still waits on the review page.

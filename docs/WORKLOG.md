@@ -91,3 +91,47 @@ type allow-list so a tampered model on the Hub is rejected rather than executed.
    the history read now skips the payment being scored. `test_a_replayed_payment_is_not_compared_with_itself`.
 2. *The memory backend's pruning read the wrong tuple field* after the event tuple gained a payment id
    (`q[0][0]` is now the id, not the timestamp). Caught by the existing suite.
+
+---
+
+## Day 2 (cont.) — 23 Oct 2026 · v1.2: hardening, observability, feedback, A2A
+
+**Built**
+- **MCP auth.** transakt-mcp rejects any request without `Authorization: Bearer <MCP_TOKEN>` (constant-time
+  compare), refuses to start without a token; `/health` and `/metrics` stay open. The investigator sends it;
+  `sentinel.sh` generates `MCP_TOKEN` and `A2A_TOKEN` into `.env` without printing them.
+- **Atomic Redis state.** Read-and-record is one Lua script. Real-Redis test: two replicas, 200 concurrent
+  payments — every payment sees a distinct prior count and none are lost. CI now runs a Redis service.
+- **Monitoring.** Prometheus metrics on all three services (counters, gauges, histograms); Prometheus +
+  Grafana in compose with a provisioned 13-panel dashboard (`:3000`). Config and all 17 PromQL queries pass
+  `promtool`; a real Prometheus scraped an e2e run and the investigator and MCP panels showed live data.
+- **Feedback loop.** `GET /feedback` exports decided cases as labels; `train.py --feedback` weights them ×25;
+  `./sentinel.sh retrain` rebuilds the scorer on them (Redis history is kept across the rebuild). Test: 12
+  dismissals of a "flash sale" burst stop it being flagged, and a new-merchant blitz is still caught.
+- **A2A.** The investigator publishes an agent card and accepts JSON-RPC `SendMessage` (A2A v1.0, official
+  `a2a-sdk`) with a payment id; it runs the same graph and returns the recommendation as a task artifact.
+  Bearer-protected; the card is public; the case still waits for a human.
+- Tests: 60 unit/API (+2 real-Redis), and the e2e run now also exercises A2A, metrics and the feedback loop.
+
+**Why**
+The v1.1 limitations list plus what a reviewer would poke at first: an unauthenticated admin proxy, a
+documented race, no way to see the system running, no way for humans to correct the model.
+
+**Concepts**
+Bearer tokens and constant-time comparison · Redis Lua scripting and atomicity · Prometheus pull model,
+counter/gauge/histogram, `rate()` and `histogram_quantile()` · provisioning Grafana as code · human-in-the-loop
+learning and sample weights · A2A agent cards, tasks and their lifecycle.
+
+**Interview line**
+"I treated the MCP server as what it is — an admin proxy — and put auth in front of it; proved a Redis race with
+a test where a naive read-then-write kept 2 of 200 updates and the Lua version kept all 200; made the whole
+pipeline observable in Grafana; closed the loop so analysts' decisions retrain the model; and exposed the agent
+over A2A so other agents can request investigations while a human still makes the call."
+
+**Mistakes & fixes**
+1. *Test-only:* the MCP SDK lets a session manager start once per process; the second test that started a
+   server failed. An autouse fixture gives each test a fresh one.
+2. *macOS portability:* `grep -q '^MCP_TOKEN=.\+'` is a GNU-ism; BSD grep on the Mac reads `\+` differently.
+   Switched to `grep -E`.
+3. `pkill -f prometheus` in a one-liner matched (and killed) the shell running it, because the pattern was on
+   its own command line. Use `pgrep` on a pattern that can't match the caller.

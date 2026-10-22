@@ -91,3 +91,40 @@ def test_review_page_and_health(data_dir):
         assert "Sentinel" in client.get("/").text
         h = client.get("/health").json()
         assert h["status"] == "UP" and h["llm"] == "rules-only"
+
+
+def test_metrics_reflect_the_case_lifecycle(data_dir):
+    def value(text, name):
+        for line in text.splitlines():
+            if line.startswith(name + " ") or line.startswith(name + "{"):
+                return float(line.rsplit(" ", 1)[1])
+        return 0.0
+
+    with TestClient(app) as client:
+        before = client.get("/metrics").text
+        cid = client.post("/cases", json=case_msg("burst", "m1")).json()["case_id"]
+        client.post("/cases", json=case_msg("burst", "m2"))
+        wait_for(client, cid, "AWAITING_REVIEW")
+        client.post(f"/cases/{cid}/decision", json={"decision": "CONFIRM_FRAUD"})
+        after = client.get("/metrics").text
+        assert value(after, "sentinel_cases_opened_total") - value(before, "sentinel_cases_opened_total") == 1
+        assert value(after, "sentinel_case_flags_attached_total") - value(before, "sentinel_case_flags_attached_total") == 1
+        assert 'sentinel_decisions_total{agreed="true",decision="CONFIRM_FRAUD"}' in after
+        assert 'sentinel_cases{status="CLOSED"} 1.0' in after
+
+
+def test_feedback_exports_decisions_as_labels(data_dir):
+    feats = {"count_2m": 12, "count_10m": 14, "history_count": 30, "amount_ratio": 1.1,
+             "log_amount": 4.9, "merchant_age_min": None, "failed_ratio_10m": 0.0}
+    with TestClient(app) as client:
+        a = client.post("/cases", json={**case_msg("burst", "f1"), "features": feats}).json()["case_id"]
+        b = client.post("/cases", json={**case_msg("calm", "f2", reasons=["MODEL_ONLY"]), "features": feats}).json()["case_id"]
+        client.post("/cases", json={**case_msg("spike", "f3", reasons=["AMOUNT_SPIKE"]), "features": feats})  # left undecided
+        for cid in (a, b):
+            wait_for(client, cid, "AWAITING_REVIEW")
+        client.post(f"/cases/{a}/decision", json={"decision": "CONFIRM_FRAUD"})
+        client.post(f"/cases/{b}/decision", json={"decision": "DISMISS"})
+        rows = {r["payment_id"]: r for r in client.get("/feedback").json()}
+        assert set(rows) == {"f1", "f2"}                     # undecided cases are not labels
+        assert rows["f1"]["label"] == 1 and rows["f2"]["label"] == 0
+        assert rows["f1"]["features"]["count_2m"] == 12

@@ -14,6 +14,14 @@ jobs:
       fail-fast: false
       matrix:
         service: [transakt-mcp, risk-scorer, investigator]
+    # A real Redis, so the scorer's concurrency test runs against the real thing.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      REDIS_TEST_URL: redis://localhost:6379/15
     defaults:
       run:
         working-directory: services/${{ matrix.service }}

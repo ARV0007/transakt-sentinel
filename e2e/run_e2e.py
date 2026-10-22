@@ -29,11 +29,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 FAKE, MCP, SCORER, INV = 18080, 18001, 18002, 18003
 ADMIN = ("sentinel-admin@transakt.local", "change-me-sentinel")
+TOKEN = "e2e-" + os.urandom(8).hex()
+A2A_TOKEN = "e2e-a2a-" + os.urandom(8).hex()
 
 
-def http(method, url, body=None):
+def http(method, url, body=None, headers=None):
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, method=method)
     req.add_header("Content-Type", "application/json")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=20) as r:
         raw = r.read()
         return json.loads(raw) if raw else None
@@ -91,7 +95,7 @@ def main():
 
         common = {"TRANSAKT_URL": f"http://127.0.0.1:{FAKE}", "ADMIN_EMAIL": ADMIN[0], "ADMIN_PASSWORD": ADMIN[1]}
         procs.append(start([PY, "-m", "app.server"], os.path.join(ROOT, "services", "transakt-mcp"),
-                           {**common, "MCP_HOST": "127.0.0.1", "MCP_PORT": str(MCP)}, log))
+                           {**common, "MCP_HOST": "127.0.0.1", "MCP_PORT": str(MCP), "MCP_TOKEN": TOKEN}, log))
         wait(f"http://127.0.0.1:{MCP}/health", "transakt-mcp")
 
         model = os.path.join(tmp, "model.skops")
@@ -105,8 +109,8 @@ def main():
 
         procs.append(start([PY, "-m", "uvicorn", "app.main:app", "--port", str(INV)],
                            os.path.join(ROOT, "services", "investigator"),
-                           {"DATA_DIR": os.path.join(tmp, "inv"), "MCP_URL": f"http://127.0.0.1:{MCP}/mcp",
-                            "KAFKA_BOOTSTRAP_SERVERS": "", "LLM_API_KEY": "", "HF_TOKEN": ""}, log))
+                           {"DATA_DIR": os.path.join(tmp, "inv"), "MCP_URL": f"http://127.0.0.1:{MCP}/mcp", "MCP_TOKEN": TOKEN,
+                            "A2A_TOKEN": A2A_TOKEN, "KAFKA_BOOTSTRAP_SERVERS": "", "LLM_API_KEY": "", "HF_TOKEN": ""}, log))
         wait(f"http://127.0.0.1:{INV}/health", "investigator")
 
         labels = os.path.join(tmp, "labels.csv")
@@ -126,6 +130,46 @@ def main():
         assert il["detected"] == il["incidents"], f"missed incidents: {il}"
         assert r["payment_level"]["precision"] >= 0.8, r["payment_level"]
         assert r["false_alarms"]["cases_on_normal_merchants"] <= 2, r["false_alarms"]
+
+        # ---- v1.2 pieces, on the same running system ----
+        inv = f"http://127.0.0.1:{INV}"
+        # 1. Another agent asks over A2A about a planted velocity-burst payment.
+        import csv
+        with open(labels) as f:
+            burst = next(row for row in csv.DictReader(f) if row["scenario"] == "velocity_burst")
+        card = http("GET", f"{inv}/.well-known/agent-card.json")
+        reply = http("POST", f"{inv}/a2a", {
+            "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+            "params": {"message": {"messageId": "e2e", "role": "ROLE_USER",
+                                   "parts": [{"data": {"payment_id": burst["payment_id"]}}]}}},
+            headers={"Authorization": f"Bearer {A2A_TOKEN}", "A2A-Version": "1.0"})
+        a2a = reply["result"]["task"]["artifacts"][0]["parts"][0]["data"]
+        print(f"A2A: {card['name']} -> {a2a['recommendation']} for {burst['payment_id'][:8]} (case {a2a['case_id']})")
+        assert a2a["recommendation"] == "HOLD_PAYOUT", a2a
+
+        # 2. Every service exposes Prometheus metrics with real numbers in them.
+        for name, url, series in (("scorer", f"http://127.0.0.1:{SCORER}/metrics/", "sentinel_model_info"),
+                                  ("investigator", f"{inv}/metrics", "sentinel_cases_opened_total"),
+                                  ("mcp", f"http://127.0.0.1:{MCP}/metrics", "sentinel_mcp_tool_calls_total")):
+            with urllib.request.urlopen(url, timeout=10) as r:
+                assert series in r.read().decode(), f"{name} metrics missing {series}"
+        print("metrics: scorer, investigator and MCP all exporting")
+
+        # 3. An analyst confirms one case and dismisses another; the decisions come back as labels
+        #    and retraining folds them in.
+        waiting = http("GET", f"{inv}/cases?status=AWAITING_REVIEW")
+        for c, d in zip(waiting[:2], ("CONFIRM_FRAUD", "DISMISS")):
+            http("POST", f"{inv}/cases/{c['id']}/decision", {"decision": d, "analyst": "e2e"})
+        fb = http("GET", f"{inv}/feedback")
+        fb_path = os.path.join(tmp, "feedback.json")
+        with open(fb_path, "w") as f:
+            json.dump(fb, f)
+        out = subprocess.run([PY, "-m", "app.train", "--out", os.path.join(tmp, "retrained.skops"),
+                              "--feedback", fb_path], cwd=os.path.join(ROOT, "services", "risk-scorer"),
+                             check=True, capture_output=True, text=True).stdout
+        assert f'"feedback_rows": {len(fb)}' in out, out
+        print(f"feedback loop: {len(fb)} analyst decisions -> retrained model")
+
         print("\n✓ end-to-end checks passed")
         print("  (Ignore the latency row here: this harness replays every event AFTER the simulation "
               "ends. With real Kafka, send-to-score is roughly the outbox's 5 s sweep.)")

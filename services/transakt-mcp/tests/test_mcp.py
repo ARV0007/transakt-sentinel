@@ -104,3 +104,44 @@ async def test_failed_login_is_a_clear_error():
     respx.post(f"{BASE}/api/v1/auth/login").mock(return_value=httpx.Response(401))
     with pytest.raises(Exception, match="bootstrap"):
         await TransaktClient(BASE, "a", "b").get_payment("p1")
+
+
+# ---------------------------------------------------------------- auth
+
+from starlette.testclient import TestClient
+
+from app.server import build_app
+
+
+def test_requests_without_the_token_are_refused():
+    with TestClient(build_app("s3cret")) as c:
+        assert c.get("/health").status_code == 200                          # health stays open
+        assert c.post("/mcp", json={}).status_code == 401
+        assert c.post("/mcp", json={}, headers={"Authorization": "Bearer wrong"}).status_code == 401
+        r = c.post("/mcp", headers={"Authorization": "Bearer s3cret", "Accept": "application/json, text/event-stream",
+                                    "Content-Type": "application/json"},
+                   json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        assert r.status_code == 200
+        names = {t["name"] for t in r.json()["result"]["tools"]}
+        assert {"get_payment", "merchant_activity"} <= names
+
+
+def test_refuses_to_start_without_a_token():
+    with pytest.raises(RuntimeError, match="MCP_TOKEN"):
+        build_app("")
+
+
+@respx.mock
+def test_tool_calls_are_counted_and_metrics_need_no_token():
+    respx.post("http://localhost:8080/api/v1/auth/login").mock(return_value=httpx.Response(200, json={"token": "t"}))
+    respx.get("http://localhost:8080/api/v1/payments/p1").mock(return_value=httpx.Response(200, json=pay(1, 0)))
+    respx.route(host="testserver").pass_through()
+    hdrs = {"Authorization": "Bearer s3cret", "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json"}
+    with TestClient(build_app("s3cret")) as c:
+        r = c.post("/mcp", headers=hdrs, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                               "params": {"name": "get_payment", "arguments": {"payment_id": "p1"}}})
+        assert r.status_code == 200 and '"id": "p1"' in r.json()["result"]["content"][0]["text"]
+        m = c.get("/metrics")
+        assert m.status_code == 200
+        assert 'sentinel_mcp_tool_calls_total{outcome="ok",tool="get_payment"}' in m.text

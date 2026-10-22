@@ -10,8 +10,11 @@ resumed after a crash mid-investigation, all from the same saved state.
 
 import asyncio
 import logging
+import time
 
 from langgraph.types import Command
+
+from . import metrics
 
 log = logging.getLogger("investigator.service")
 
@@ -41,7 +44,10 @@ class CaseService:
         """Open a case for a flagged payment, or attach it to the merchant's open one."""
         case_id, is_new = self.store.open_or_attach(msg)
         if is_new:
+            metrics.CASES_OPENED.inc()
             self.spawn(case_id)
+        else:
+            metrics.FLAGS_ATTACHED.inc()
         return case_id, is_new
 
     def spawn(self, case_id):
@@ -80,7 +86,9 @@ class CaseService:
                 log.exception("case %s failed", case_id)
                 self.store.update(case_id, status="ERROR", error=str(e)[:500])
                 return
-        await self.sync(case_id)
+        status = await self.sync(case_id)
+        if status == "AWAITING_REVIEW":
+            metrics.INVESTIGATION_SECONDS.observe(time.time() - case["opened_at"])
 
     async def sync(self, case_id):
         """Copy what the checkpoint says into the case table."""
@@ -110,7 +118,11 @@ class CaseService:
         except Exception as e:
             self.store.update(case_id, status="AWAITING_REVIEW")
             raise CaseError(500, f"could not resume case: {e}")
-        return await self.sync(case_id)
+        status = await self.sync(case_id)
+        d = (self.store.get(case_id) or {}).get("decision") or {}
+        metrics.DECISIONS.labels(decision=decision,
+                                 agreed=str(bool(d.get("agreed_with_recommendation"))).lower()).inc()
+        return status
 
     async def retry(self, case_id):
         case = self.store.get(case_id)

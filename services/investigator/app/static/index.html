@@ -143,6 +143,8 @@ async function show(id, quiet) {
   });
 }
 
+// A link like /#case_abc123 (the review_url an A2A caller gets) opens that case directly.
+if (location.hash.length > 1) { filter = ""; selected = decodeURIComponent(location.hash.slice(1)); }
 renderFilters(); load(); setInterval(load, 4000);
 </script>
 </body>

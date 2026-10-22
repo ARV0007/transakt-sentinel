@@ -6,6 +6,7 @@
 #   ./sentinel.sh simulate    plant labelled fraud into live traffic (~6 minutes)
 #   ./sentinel.sh eval        grade the system against the simulator's answer key
 #   ./sentinel.sh demo        all four, in order
+#   ./sentinel.sh retrain     retrain the scorer on analysts' decisions from the review page
 #   ./sentinel.sh status | logs [service] | down | reset
 #
 # Expects Transakt checked out next to this repo (../transakt). Override with
@@ -32,6 +33,20 @@ preflight() {
     cp .env.example .env
     echo "• Created .env from .env.example (add an HF token there to turn the LLM on)."
   fi
+  # Random shared secrets, generated straight into .env and never printed:
+  #   MCP_TOKEN  investigator -> transakt-mcp
+  #   A2A_TOKEN  other agents -> the investigator's A2A endpoint
+  for name in MCP_TOKEN A2A_TOKEN; do
+    if ! grep -Eq "^$name=.+" .env; then        # -E: macOS grep has no \+ in basic regex
+      token=$(openssl rand -hex 32)
+      if grep -q "^$name=" .env; then
+        sed -i.bak "s/^$name=.*/$name=$token/" .env && rm -f .env.bak
+      else
+        echo "$name=$token" >> .env
+      fi
+      echo "• Generated $name in .env."
+    fi
+  done
 }
 
 load_env() { set -a; # shellcheck disable=SC1091
@@ -53,7 +68,11 @@ cmd_up() {
   wait_http http://localhost:8080/api/v1/health "Transakt" 240
   wait_http http://localhost:8002/health "risk-scorer"
   wait_http http://localhost:8003/health "investigator"
-  echo "✓ Up. Review page: http://localhost:8003   MCP: http://localhost:8001/mcp"
+  echo "✓ Up."
+  echo "  Review page : http://localhost:8003"
+  echo "  Dashboard   : http://localhost:3000   (Grafana, opens on the Sentinel dashboard)"
+  echo "  Prometheus  : http://localhost:9090"
+  echo "  MCP server  : http://localhost:8001/mcp (needs MCP_TOKEN from .env)"
 }
 
 cmd_bootstrap() {
@@ -77,6 +96,20 @@ cmd_bootstrap() {
 }
 
 # -u: unbuffered output, so progress shows up live even when piped into a log.
+cmd_retrain() {
+  preflight
+  local out="services/risk-scorer/feedback/feedback.json"
+  curl -fsS http://localhost:8003/feedback -o "$out" || { echo "✗ investigator isn't reachable on :8003"; exit 1; }
+  local n; n=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$out")
+  if [ "$n" = "0" ]; then
+    echo "• No decided cases yet. Confirm or dismiss some at http://localhost:8003 first."; exit 0
+  fi
+  echo "• $n analyst decisions -> retraining the scorer (merchant history in Redis is kept)."
+  compose up -d --build risk-scorer
+  wait_http http://localhost:8002/health "risk-scorer"
+  curl -fsS http://localhost:8002/health; echo
+}
+
 cmd_simulate() { need "$PY" "Install it with: brew install python@3.12"; "$PY" -u simulator/simulate.py "$@"; }
 cmd_eval()     { need "$PY" "Install it with: brew install python@3.12"; "$PY" -u eval/evaluate.py "$@"; }
 
@@ -85,6 +118,7 @@ case "${1:-help}" in
   bootstrap) cmd_bootstrap ;;
   simulate)  shift; cmd_simulate "$@" ;;
   eval)      shift; cmd_eval "$@" ;;
+  retrain)   cmd_retrain ;;
   demo)      cmd_up; cmd_bootstrap; cmd_simulate; cmd_eval ;;
   status)    compose ps ;;
   logs)      shift; compose logs -f --tail=100 "$@" ;;
@@ -95,5 +129,5 @@ case "${1:-help}" in
     read -r -p "This deletes Sentinel's data AND Transakt's Docker database volume. Type 'yes': " ok
     [ "$ok" = "yes" ] || { echo "Cancelled."; exit 0; }
     compose down -v; rm -rf simulator/output eval/results; echo "✓ Volumes and outputs wiped." ;;
-  *)         sed -n '2,11p' "$0" ;;
+  *)         sed -n '2,12p' "$0" ;;
 esac
