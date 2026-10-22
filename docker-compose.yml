@@ -42,12 +42,17 @@ services:
     environment:
       TRANSAKT_URL: http://app:8080
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # Database 2 of Transakt's Redis: Transakt uses 0, its tests use 1.
+      # Merchant history now survives a scorer restart.
+      REDIS_URL: redis://redis:6379/2
     ports:
       - "8002:8002"
     volumes:
       - sentinel-scores:/data
     depends_on:
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]

@@ -1,8 +1,8 @@
 """
 Trains the risk model and (optionally) publishes it to the Hugging Face Hub.
 
-    python -m app.train --out model/model.joblib
-    python -m app.train --out model/model.joblib --push-to-hub <user>/transakt-sentinel-risk
+    python -m app.train --out model/model.skops
+    python -m app.train --out model/model.skops --push-to-hub <user>/transakt-sentinel-risk
 
 Why a gradient-boosted tree and not an LLM: real fraud teams score every
 transaction with fast tabular models. This one answers in well under a
@@ -23,8 +23,8 @@ import math
 import os
 import random
 
-import joblib
 import numpy as np
+import skops.io as sio
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import train_test_split
@@ -152,8 +152,8 @@ negatives. Metrics on a held-out synthetic split are therefore optimistic.
 
 **Held-out metrics:** `{metrics}`
 
-**Loading:** this file is a joblib pickle. Only load pickles from a repository you
-control — unpickling runs code. A safer format (skops or ONNX) is a planned change.
+**Format:** [skops](https://skops.readthedocs.io), not pickle. Loading checks every
+type in the file against an explicit allow-list, so a tampered file cannot run code.
 
 Version `{version}`.
 """
@@ -161,13 +161,13 @@ Version `{version}`.
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="model/model.joblib")
+    ap.add_argument("--out", default="model/model.skops")
     ap.add_argument("--push-to-hub", metavar="REPO_ID", help="e.g. yourname/transakt-sentinel-risk")
     args = ap.parse_args()
 
     bundle = train()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    joblib.dump(bundle, args.out)
+    sio.dump(bundle, args.out)
     print(f"saved {args.out}  metrics={json.dumps(bundle['metrics'])}")
 
     if args.push_to_hub:
@@ -176,7 +176,7 @@ def main():
         api.create_repo(args.push_to_hub, exist_ok=True)
         card = MODEL_CARD.format(features=", ".join(FEATURE_ORDER),
                                  metrics=json.dumps(bundle["metrics"]), version=bundle["version"])
-        api.upload_file(path_or_fileobj=args.out, path_in_repo="model.joblib", repo_id=args.push_to_hub)
+        api.upload_file(path_or_fileobj=args.out, path_in_repo="model.skops", repo_id=args.push_to_hub)
         api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md", repo_id=args.push_to_hub)
         print(f"pushed to https://huggingface.co/{args.push_to_hub}")
 

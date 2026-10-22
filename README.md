@@ -26,6 +26,10 @@ Transakt ──payment.settled──► risk-scorer ──fraud.cases──► i
 - **Deliberate failure policies.** Broken tool → "could not check". LLM down → rules.
   No evidence at all → `NEEDS_MANUAL_REVIEW`, never `ALLOW`.
 - **Grounding check** on every LLM rationale: numbers not present in the evidence are flagged.
+- **Restart-safe scoring.** Merchant history lives in Redis, so a redeploy doesn't hand fraudsters a
+  clean slate; a replayed Kafka event is never counted twice.
+- **No pickles.** The model is saved with skops and loaded through a type allow-list, so a tampered
+  file from the Hub is refused instead of executed.
 - **Measured, not claimed.** A simulator plants labelled fraud; `eval/evaluate.py` reports
   precision/recall, incident detection, false alarms and how much traffic reached the LLM.
 - **Event-driven microservices** split by speed, scaling and failure behaviour, at-least-once
@@ -90,6 +94,5 @@ CI runs all unit suites plus the end-to-end run on every push.
 
 ## Honest limitations
 
-Merchant fraud only (Transakt records no card/device data); scorer state is in-memory;
-training data is synthetic; decisions are recorded but not yet enforced in Transakt.
+Merchant fraud only (Transakt records no card/device data); training data is synthetic; decisions are recorded but not yet enforced in Transakt.
 Details in [docs/architecture.md](docs/architecture.md#known-limitations-v1).

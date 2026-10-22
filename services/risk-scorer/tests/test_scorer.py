@@ -38,17 +38,17 @@ def evt(i, merchant, amount, status="CAPTURED"):
 
 # ---------------------------------------------------------------- features
 
-def test_features_compare_against_history_before_adding_the_payment():
+async def test_features_compare_against_history_before_adding_the_payment():
     fb = FeatureBuilder()
     for t in range(5):
-        fb.compute("m", 1000 + t * 60, 50_000, "CAPTURED")
-    f = fb.compute("m", 1400, 2_500_000, "CAPTURED")
+        await fb.compute("m", 1000 + t * 60, 50_000, "CAPTURED")
+    f = await fb.compute("m", 1400, 2_500_000, "CAPTURED")
     assert f["amount_ratio"] == 50          # vs the old median, not one it raised itself
     assert f["history_count"] == 5
 
 
-def test_ratio_is_unknown_with_too_little_history():
-    f = FeatureBuilder().compute("m", 0, 50_000, "CAPTURED")
+async def test_ratio_is_unknown_with_too_little_history():
+    f = await FeatureBuilder().compute("m", 0, 50_000, "CAPTURED")
     assert math.isnan(f["amount_ratio"]) and f["count_2m"] == 1
 
 

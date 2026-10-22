@@ -1,6 +1,9 @@
 # Transakt Sentinel — architecture
 
-**Version 1.0** · 22 Oct 2026
+**Version 1.1** · 23 Oct 2026
+
+*1.1: scorer history moved to Redis; model file moved from pickle to skops. The runtime
+topology is unchanged apart from the scorer's new Redis dependency.*
 
 Sentinel is a fraud-investigation system that sits beside the Transakt payment
 gateway. It scores every settled payment, investigates the risky ones with a
@@ -19,6 +22,7 @@ flowchart LR
 
     K1 -->|consumer group risk-scorer| RS[risk-scorer<br/>features + GBM model<br/>no LLM]
     HF[(Hugging Face Hub<br/>model repo)] -.optional.-> RS
+    RS <-->|per-merchant history, db 2| RD[(Redis<br/>Transakt's)]
     RS -->|score ≥ 0.5, keyed by merchant| K2[[Kafka: fraud.cases]]
     K2 -->|consumer group investigator| INV
 
@@ -64,6 +68,9 @@ behaviour** — not a wish to have many services.
 | No evidence → `NEEDS_MANUAL_REVIEW`, never `ALLOW` | Unknown is not safe. (Contrast: Transakt's rate limiter fails *open* to protect availability.) | More human work during an outage |
 | MCP SDK pinned `<2` | v2 renamed FastMCP and broke the LangChain adapter at the time of building | Re-evaluate when the ecosystem settles |
 | Model trained at Docker build | No binary in git; image always matches its feature code | Build takes a few seconds longer |
+| Scorer history in Redis sorted sets (1.1) | Survives restarts and redeploys; shared by replicas; reuses Transakt's Redis on its own DB number | One network hop per payment (~sub-ms locally) |
+| Redis down → scorer **pauses** (offset not committed) | Scoring with an empty history would wave fraud through; events wait safely in Kafka | Flags are delayed during a Redis outage |
+| Model saved with skops, allow-listed types (1.1) | A pickle runs code on load, so a tampered Hub file could take over the scorer | One allow-list entry to review when the model type changes |
 
 ## Data contracts
 
@@ -79,8 +86,9 @@ Reason codes: `VELOCITY` (≥ 8 payments in 2 min), `AMOUNT_SPIKE` (≥ 10× own
 ## Known limitations (v1)
 
 - Merchant fraud only. Card fraud needs customer/card/device fields Transakt doesn't record.
-- Scorer state is in memory; a restart forgets merchant history (Redis is the fix).
 - Training data is synthetic, built from the same patterns the simulator plants, so the model's offline metrics are optimistic. Next: mix in PaySim.
 - `finalize` records the decision only; Transakt has no hold-payout endpoint yet.
-- The joblib model file is a pickle; only load it from a Hub repo you control (skops/ONNX planned).
 - Kafka exists only in local Docker Compose, so the full pipeline demo runs locally, not on Render.
+- `payment.settled` is keyed by payment id, so one merchant's payments spread across partitions. Two scorer
+  replicas could read-then-write the same merchant's history concurrently; a Lua script (or re-keying by
+  merchant) would make that atomic.

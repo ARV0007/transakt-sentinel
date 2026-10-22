@@ -127,7 +127,12 @@ def main():
     false_cases = [c for c in cases if c["merchant_id"] in normal_merchants]
     false_cases_allowed = sum(1 for c in false_cases
                               if (c.get("recommendation") or {}).get("action") in ("ALLOW", "NEEDS_MANUAL_REVIEW"))
-    llm_cases = sum(1 for c in cases if (c.get("recommendation") or {}).get("source") == "llm")
+    llm_recs = [c["recommendation"] for c in cases if (c.get("recommendation") or {}).get("source") == "llm"]
+    llm_cases = len(llm_recs)
+    # When the LLM is on, how often does it disagree with the plain rules? Never
+    # means it is an expensive copy of them; often means read those cases.
+    llm_disagreed = sum(1 for r in llm_recs if r.get("rules_would_say") and r["action"] != r["rules_would_say"])
+    llm_fell_back = sum(1 for c in cases if (c.get("recommendation") or {}).get("source") == "rules (llm failed)")
     grounding_flags = sum(1 for c in cases if not ((c.get("recommendation") or {}).get("grounding") or {}).get("ok", True))
 
     results = {
@@ -141,7 +146,8 @@ def main():
                          "of_which_recommended_allow_or_review": false_cases_allowed},
         "cost": {"cases": len(cases), "llm_recommendations": llm_cases,
                  "llm_share_of_payments_pct": pct(len(cases), len(labels)),
-                 "grounding_warnings": grounding_flags},
+                 "grounding_warnings": grounding_flags,
+                 "llm_disagreed_with_rules": llm_disagreed, "llm_failed_fell_back_to_rules": llm_fell_back},
         "latency_seconds": {"send_to_score_p50": round(median(lags), 2) if lags else None,
                             "send_to_score_p95": round(p95(lags), 2) if lags else None},
         "graded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -164,6 +170,9 @@ def main():
         f"({results['false_alarms']['of_which_recommended_allow_or_review']} recommended ALLOW/REVIEW) |",
         f"| LLM work | {results['cost']['cases']} cases for {results['payments']} payments "
         f"({results['cost']['llm_share_of_payments_pct']}% of traffic reached the LLM step) |",
+        f"| Recommendations written by | " + (f"LLM {llm_cases}/{len(cases)} (disagreed with rules {llm_disagreed}, "
+                                              f"failed→rules {llm_fell_back})" if llm_cases or llm_fell_back
+                                              else "rules only (no LLM key set)") + " |",
         f"| Grounding warnings | {results['cost']['grounding_warnings']} |",
         f"| Send → score latency p50 / p95 | {results['latency_seconds']['send_to_score_p50']} s / "
         f"{results['latency_seconds']['send_to_score_p95']} s (includes the outbox's 5 s sweep) |",

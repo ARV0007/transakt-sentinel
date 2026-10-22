@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query
 
+from .features import state_from_env
 from .model import RiskModel, load_bundle
 from .scoring import MerchantDirectory, Scorer
 from .store import ScoreStore
@@ -78,7 +79,9 @@ def build_scorer():
     client = TransaktClient(os.environ.get("TRANSAKT_URL", "http://localhost:8080"),
                             os.environ.get("ADMIN_EMAIL", "sentinel-admin@transakt.local"),
                             os.environ.get("ADMIN_PASSWORD", "change-me-sentinel"))
-    return Scorer(model, store, MerchantDirectory(client))
+    state = state_from_env(os.environ.get("REDIS_URL"))
+    log.info("feature state: %s", type(state).__name__)
+    return Scorer(model, store, MerchantDirectory(client), state)
 
 
 @asynccontextmanager
@@ -101,6 +104,7 @@ app = FastAPI(title="risk-scorer", lifespan=lifespan)
 def health():
     m = app.state.scorer.model
     return {"status": "UP", "service": "risk-scorer", "model_version": m.version,
+            "feature_state": type(app.state.scorer.features.state).__name__,
             "model_source": m.source, "threshold": m.threshold}
 
 

@@ -6,7 +6,7 @@ dicts: event in -> features -> score -> (maybe) a case to open.
 import logging
 import time
 
-from .features import FeatureBuilder, reason_codes
+from .features import FeatureBuilder, MemoryState, reason_codes
 from .transakt_client import parse_ts
 
 log = logging.getLogger("risk-scorer")
@@ -34,11 +34,11 @@ class MerchantDirectory:
 
 
 class Scorer:
-    def __init__(self, model, store, directory):
+    def __init__(self, model, store, directory, state=None):
         self.model = model
         self.store = store
         self.directory = directory
-        self.features = FeatureBuilder()
+        self.features = FeatureBuilder(state or MemoryState())
 
     async def handle(self, event, event_ts):
         """
@@ -55,7 +55,11 @@ class Scorer:
         merchant_id = event["merchantId"]
         amount = int(event["amountPaise"])
         created = await self.directory.created_ts(merchant_id)
-        feats = self.features.compute(merchant_id, event_ts, amount, event.get("status"), created)
+        # If Redis is down this raises, the Kafka offset is NOT committed, and the
+        # consumer loop retries: scoring pauses and events wait in Kafka rather
+        # than being scored with an empty history (which would wave fraud through).
+        feats = await self.features.compute(merchant_id, event_ts, amount, event.get("status"),
+                                            created, payment_id)
 
         started = time.perf_counter()
         score = self.model.score(feats)

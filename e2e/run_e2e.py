@@ -94,7 +94,7 @@ def main():
                            {**common, "MCP_HOST": "127.0.0.1", "MCP_PORT": str(MCP)}, log))
         wait(f"http://127.0.0.1:{MCP}/health", "transakt-mcp")
 
-        model = os.path.join(tmp, "model.joblib")
+        model = os.path.join(tmp, "model.skops")
         subprocess.run([PY, "-m", "app.train", "--out", model], cwd=os.path.join(ROOT, "services", "risk-scorer"),
                        check=True, stdout=log, stderr=subprocess.STDOUT)
         scores_db = os.path.join(tmp, "scores.db")

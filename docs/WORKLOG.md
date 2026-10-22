@@ -55,3 +55,39 @@ all `HOLD_PAYOUT`; 0 cases on normal merchants; precision 0.947, recall 0.818; s
 
 **Earlier the same day:** the first `mkdir`/`git init` ran in a new Terminal tab sitting in `~`, so they
 landed in the home folder — the wrong-directory trap again. Rule: run `pwd` before anything project-relative.
+
+---
+
+## Day 2 — 23 Oct 2026 · v1.1: restart-safe scoring, no pickles
+
+**Built**
+- Async state backends for the scorer's features: `MemoryState` (tests, no Redis) and `RedisState`
+  (one sorted set + one counter per merchant, 24 h window, capped at 2,000 events). Compose points the
+  scorer at `redis://redis:6379/2`; `/health` reports which backend is live.
+- Model saved/loaded with **skops** behind a one-entry type allow-list; Hub push uploads `model.skops`.
+  A tampered Hub model raises instead of silently falling back to the local file.
+- Eval report now says who wrote the recommendations and, with an LLM on, how often it disagreed with
+  the rules and how often it failed back to them.
+- 10 new tests (46 total): backends give identical features, history survives a restart, a replayed
+  payment isn't compared with itself or double-counted, the window expires, skops round-trips exactly,
+  an unknown type and a raw pickle are both refused. E2E still 6/6 incidents, precision 1.0.
+
+**Why**
+The v1 limitations list. A redeploy wiping merchant history is a real hole (a burst timed with a deploy
+looks like a new shop), and loading pickles from a public Hub is a real supply-chain risk.
+
+**Concepts**
+Redis sorted sets (`ZADD`/`ZRANGEBYSCORE`/`ZREMRANGEBYSCORE`), idempotent writes via natural keys,
+pause-on-dependency-failure vs fail-open, pickle deserialisation risk, allow-listed deserialisation.
+
+**Interview line**
+"I moved the scorer's per-merchant state into Redis so a redeploy can't give fraudsters a clean slate, made
+Kafka replays idempotent by putting the payment id in the set member, and replaced pickle with skops plus a
+type allow-list so a tampered model on the Hub is rejected rather than executed."
+
+**Mistakes & fixes**
+1. *A crash between "remember this payment" and "save its score"* would make the Kafka redelivery compare the
+   payment with itself (and count it twice). Caught while writing the Redis backend, before any test existed for it;
+   the history read now skips the payment being scored. `test_a_replayed_payment_is_not_compared_with_itself`.
+2. *The memory backend's pruning read the wrong tuple field* after the event tuple gained a payment id
+   (`q[0][0]` is now the id, not the timestamp). Caught by the existing suite.

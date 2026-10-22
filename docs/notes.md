@@ -87,3 +87,30 @@ time, so the model shrugged at exactly the blitz pattern (only 5 of 12 caught; t
 payment scored 0.06). Fixing the generator to keep a young account's history and ticket size
 consistent with its age fixed it — see `test_new_merchant_blitz_is_caught`. Lesson: **with synthetic data, the generator *is* your assumptions** — test the model
 against scenario-shaped traffic, not only against a held-out split of its own data.
+
+## Why the scorer's memory moved to Redis (v1.1)
+
+The scorer judges a payment against the merchant's recent history. In v1 that history lived in
+a Python dict, so every restart wiped it: the first payments after a redeploy were compared with
+nothing, and a fraudster who timed a burst with a deploy would look like a quiet new shop.
+
+Now each merchant has a Redis **sorted set**: the score is the timestamp, the member is
+`payment|amount|status`. "Everything in the last 24 h" is one `ZRANGEBYSCORE`, old entries are
+trimmed with `ZREMRANGEBYSCORE`, and an all-time counter sits beside it.
+
+Two subtleties worth being able to explain:
+- **Replays.** If the scorer crashes after writing to Redis but before saving the score, Kafka
+  redelivers the payment. Putting the payment id inside the member makes the second `ZADD` a
+  no-op, the counter is only incremented when `ZADD` actually added something, and the history
+  read skips the payment being scored — so it is never compared with itself.
+- **Failure policy.** If Redis is down, `compute` raises, the Kafka offset isn't committed, and
+  the consumer retries. Scoring *pauses*; it does not continue with an empty history. Payments are
+  unaffected either way — they were settled before the scorer ever saw them.
+
+## Why not pickle (v1.1)
+
+`pickle.load` can run arbitrary code: a pickle is a small program that rebuilds an object. Any
+model file you download is therefore only as safe as everyone who can push to that repository.
+skops stores plain data and, on load, lists every type in the file; we refuse anything not on a
+one-line allow-list (`TreePredictor`). A test dumps a file containing an unknown class and checks
+it is rejected.

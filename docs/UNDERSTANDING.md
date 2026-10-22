@@ -132,3 +132,25 @@ Also: cases on normal merchants (false alarms), and how much traffic reached the
 1. A velocity burst's first few payments look normal. Why does payment-level recall
    understate how well the system works, and which metric tells the truer story?
 2. What number would you put on your resume from this, and how would you defend it?
+
+---
+
+## Chapter 8 — Making the scorer restart-safe, and the model file safe (v1.1)
+
+**Memory.** The scorer used to remember each merchant's recent payments in a Python dict. A
+restart forgot all of it. Now that history lives in Redis — the same Redis Transakt already
+runs, on database 2 — as one sorted set per merchant, ordered by time. Restart the scorer and
+it picks up exactly where it was.
+
+**The file.** The trained model used to be saved as a pickle. Loading a pickle runs code, so a
+tampered model downloaded from Hugging Face could take over the scorer. It's now saved with
+skops, which refuses to build any type that isn't on a short allow-list.
+
+**Counter-questions**
+1. Why does the payment id go *inside* the Redis set member instead of just the amount and status?
+2. Redis goes down mid-traffic. What does the scorer do, and why is that better than carrying on?
+3. Transakt's Redis rate limiter fails *open* when Redis is down, but the scorer *pauses*. Same
+   Redis, opposite policies — defend both.
+4. `payment.settled` is keyed by payment id, not merchant. Why does that matter once you run two
+   scorer replicas?
+5. Someone says "just load the model with joblib, it's from our own Hub repo". What's your answer?
