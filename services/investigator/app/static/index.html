@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel Review</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6860; --line: #e3e0d8;
+    --hold: #b3261e; --hold-bg: #fbe9e7; --allow: #1e6b3a; --allow-bg: #e6f4ea;
+    --review: #8a5a00; --review-bg: #fdf3dc; --accent: #2f4fbf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141412; --panel: #1d1d1a; --ink: #ecebe6; --muted: #9d9a90; --line: #33322d;
+      --hold: #ff8a80; --hold-bg: #3a1d1b; --allow: #7fd49b; --allow-bg: #17301f;
+      --review: #f2c66d; --review-bg: #33290f; --accent: #8fa6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--ink); }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px;
+           align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+  header .stats { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-height: calc(100vh - 58px); }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  #list { border-right: 1px solid var(--line); overflow-y: auto; }
+  .filters { display: flex; gap: 6px; padding: 12px 16px; flex-wrap: wrap; }
+  .filters button { border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+                    border-radius: 999px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+  .filters button.on { border-color: var(--accent); color: var(--accent); }
+  .item { padding: 12px 16px; border-top: 1px solid var(--line); cursor: pointer; }
+  .item:hover, .item.sel { background: var(--panel); }
+  .item .top { display: flex; justify-content: space-between; gap: 8px; }
+  .item .id { font-family: ui-monospace, monospace; font-size: 13px; }
+  .item .meta { color: var(--muted); font-size: 13px; }
+  .pill { font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px;
+          background: var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.HOLD_PAYOUT { background: var(--hold-bg); color: var(--hold); }
+  .pill.ALLOW { background: var(--allow-bg); color: var(--allow); }
+  .pill.NEEDS_MANUAL_REVIEW { background: var(--review-bg); color: var(--review); }
+  #detail { padding: 20px 24px; max-width: 900px; }
+  #detail h2 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .rec { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .warn { color: var(--review); font-size: 13px; margin-top: 8px; }
+  .finding { padding: 8px 0; border-top: 1px solid var(--line); }
+  .finding:first-of-type { border-top: 0; }
+  .finding b { font-weight: 600; }
+  .sig { font-size: 12px; margin-left: 6px; }
+  .sig.y { color: var(--hold); } .sig.n { color: var(--allow); } .sig.e { color: var(--review); }
+  textarea { width: 100%; min-height: 60px; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+             font: inherit; background: var(--bg); color: var(--ink); }
+  .actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .actions button { border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  .confirm { background: var(--hold); color: #fff; }
+  .dismiss { background: var(--allow); color: #fff; }
+  .empty { color: var(--muted); padding: 40px 0; }
+  code { font-family: ui-monospace, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sentinel · fraud review</h1>
+  <span class="stats" id="stats"></span>
+</header>
+<main>
+  <section id="list">
+    <div class="filters" id="filters"></div>
+    <div id="items"></div>
+  </section>
+  <section id="detail"><p class="empty">Select a case.</p></section>
+</main>
+<script>
+const FILTERS = [["AWAITING_REVIEW", "Awaiting review"], ["", "All"], ["INVESTIGATING", "Investigating"],
+                 ["CLOSED", "Closed"], ["ERROR", "Error"]];
+let filter = "AWAITING_REVIEW", selected = null;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rupees = p => p == null ? "—" : "Rs " + (p / 100).toLocaleString("en-IN");
+const ago = t => { const s = Math.round(Date.now() / 1000 - t); return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s / 60) + "m ago" : Math.round(s / 3600) + "h ago"; };
+
+function renderFilters() {
+  document.getElementById("filters").innerHTML = FILTERS.map(([v, l]) =>
+    `<button class="${v === filter ? "on" : ""}" data-f="${v}">${l}</button>`).join("");
+  document.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { filter = b.dataset.f; renderFilters(); load(); });
+}
+
+async function load() {
+  const [cases, health] = await Promise.all([
+    fetch("/cases" + (filter ? "?status=" + filter : "")).then(r => r.json()),
+    fetch("/health").then(r => r.json())]);
+  const s = health.cases || {};
+  document.getElementById("stats").textContent =
+    `${s.AWAITING_REVIEW || 0} awaiting · ${s.INVESTIGATING || 0} investigating · ${s.CLOSED || 0} closed · LLM: ${health.llm}`;
+  document.getElementById("items").innerHTML = cases.length ? cases.map(c => {
+    const a = c.recommendation?.action;
+    return `<div class="item ${c.id === selected ? "sel" : ""}" data-id="${c.id}">
+      <div class="top"><span class="id">${esc(c.id)}</span>${a ? `<span class="pill ${a}">${a.replaceAll("_", " ")}</span>` : `<span class="pill">${esc(c.status)}</span>`}</div>
+      <div class="meta">${esc(c.reasons.join(", "))} · ${c.payment_ids.length} payment(s) · ${ago(c.opened_at)}</div></div>`;
+  }).join("") : `<p class="empty" style="padding:16px">No cases here.</p>`;
+  document.querySelectorAll(".item").forEach(el => el.onclick = () => show(el.dataset.id));
+  if (selected) show(selected, true);
+}
+
+async function show(id, quiet) {
+  selected = id;
+  document.querySelectorAll(".item").forEach(el => el.classList.toggle("sel", el.dataset.id === id));
+  const c = await fetch("/cases/" + id).then(r => r.json());
+  const d = document.getElementById("detail");
+  if (quiet && d.dataset.id === id && d.dataset.status === c.status) return;   // don't wipe a note being typed
+  d.dataset.id = id; d.dataset.status = c.status;
+  const r = c.recommendation, t = c.trigger;
+  const findings = Object.entries(c.findings || {}).map(([k, f]) => `<div class="finding"><b>${esc(k.replaceAll("_", " "))}</b>
+      ${f.error ? `<span class="sig e">could not check</span><div>${esc(f.error)}</div>`
+                : `<span class="sig ${f.signal ? "y" : "n"}">${f.signal ? "signal" : "no signal"}</span><div>${esc(f.summary)}</div>`}</div>`).join("");
+  d.innerHTML = `<h2>${esc(c.id)}</h2>
+    <div class="sub">Merchant <code>${esc(c.merchant_id)}</code> · ${esc(c.status)} · opened ${ago(c.opened_at)}</div>
+    <div class="card"><h3>Trigger</h3>
+      Payment <code>${esc(t.payment_id)}</code> · ${rupees(t.amount_paise)} · risk score ${t.score} · ${esc(c.reasons.join(", "))}
+      ${c.payment_ids.length > 1 ? `<div class="sub" style="margin:6px 0 0">${c.payment_ids.length - 1} more flagged payment(s) attached to this case</div>` : ""}</div>
+    ${r ? `<div class="card"><h3>Recommendation</h3>
+      <div class="rec"><span class="pill ${r.action}">${r.action.replaceAll("_", " ")}</span>
+        <span class="sub" style="margin:0">confidence ${r.confidence} · from ${esc(r.source)}${r.rules_would_say && r.rules_would_say !== r.action ? ` · rules would say ${r.rules_would_say}` : ""}</span></div>
+      <div>${esc(r.rationale)}</div>
+      ${r.grounding && !r.grounding.ok ? `<div class="warn">Check this: the rationale quotes ${esc(r.grounding.ungrounded_numbers.join(", "))}, which do not appear in the evidence.</div>` : ""}</div>`
+      : `<div class="card"><h3>Recommendation</h3><span class="sub">Investigation in progress…</span></div>`}
+    <div class="card"><h3>Evidence</h3>${findings || `<span class="sub">Specialists still working…</span>`}</div>
+    ${c.status === "AWAITING_REVIEW" ? `<div class="card"><h3>Your decision</h3>
+      <textarea id="note" placeholder="Note (optional)"></textarea>
+      <div class="actions"><button class="confirm" data-d="CONFIRM_FRAUD">Confirm fraud · hold payout</button>
+      <button class="dismiss" data-d="DISMISS">Dismiss · false positive</button></div></div>` : ""}
+    ${c.decision ? `<div class="card"><h3>Decision</h3><b>${esc(c.decision.decision)}</b> by ${esc(c.decision.analyst)}
+      ${c.decision.note ? ` — ${esc(c.decision.note)}` : ""}<div class="sub" style="margin:4px 0 0">${c.decision.agreed_with_recommendation ? "Agreed with" : "Overrode"} the recommendation</div></div>` : ""}
+    ${c.error ? `<div class="card"><h3>Error</h3>${esc(c.error)}</div>` : ""}`;
+  d.querySelectorAll("[data-d]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const res = await fetch(`/cases/${id}/decision`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({decision: b.dataset.d, note: document.getElementById("note").value, analyst: "analyst"})});
+    if (!res.ok) alert((await res.json()).detail);
+    load();
+  });
+}
+
+renderFilters(); load(); setInterval(load, 4000);
+</script>
+</body>
+</html>

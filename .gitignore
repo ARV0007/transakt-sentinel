@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+.pytest_cache/
+*.db
+*.db-*
+model/
+simulator/output/
+eval/results/

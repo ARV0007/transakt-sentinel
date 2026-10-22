@@ -1,0 +1,4 @@
+# MCP SDK pinned below 2.0: v2 (Sept 2026) renamed FastMCP and the LangChain
+# adapter ecosystem has not settled on it yet. Re-evaluate before upgrading.
+mcp>=1.27,<2
+httpx>=0.28,<1

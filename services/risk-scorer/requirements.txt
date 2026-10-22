@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn>=0.30
+aiokafka>=0.11
+httpx>=0.28,<1
+scikit-learn>=1.5
+joblib>=1.4
+numpy>=2
+huggingface_hub>=0.25

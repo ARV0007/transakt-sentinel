@@ -1,0 +1,81 @@
+# Sentinel's services, LAYERED ON TOP of Transakt's own docker-compose.yml.
+#
+# Run through ./sentinel.sh, which does:
+#   docker compose -p transakt -f ../transakt/docker-compose.yml -f docker-compose.yml ...
+#
+# Why an overlay instead of a copy: Transakt's compose already defines Postgres,
+# Redis, Kafka and the app. Copying them here would mean two definitions that
+# drift apart. Layering adds three services and adjusts two settings, and
+# Transakt's repository is never touched.
+#
+# Paths use ${SENTINEL_DIR} because with several -f files, Compose resolves
+# relative paths from the FIRST file's folder (Transakt's), not this one's.
+
+services:
+  # Adjustments to Transakt's app for local fraud simulation only.
+  app:
+    environment:
+      # The simulator's velocity burst is 30 payments a minute from one merchant.
+      # At the default 20/minute it would hit 429s and the burst Transakt records
+      # would not be the burst we planted.
+      RATE_LIMIT_PER_MINUTE: "100000"
+      LOGIN_RATE_LIMIT_PER_MINUTE: "100"
+
+  transakt-mcp:
+    build: ${SENTINEL_DIR:?run ./sentinel.sh instead of docker compose directly}/services/transakt-mcp
+    env_file: ${SENTINEL_DIR}/.env
+    environment:
+      TRANSAKT_URL: http://app:8080
+    ports:
+      - "8001:8001"
+    depends_on:
+      - app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  risk-scorer:
+    build: ${SENTINEL_DIR}/services/risk-scorer
+    env_file: ${SENTINEL_DIR}/.env
+    environment:
+      TRANSAKT_URL: http://app:8080
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    ports:
+      - "8002:8002"
+    volumes:
+      - sentinel-scores:/data
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  investigator:
+    build: ${SENTINEL_DIR}/services/investigator
+    env_file: ${SENTINEL_DIR}/.env
+    environment:
+      MCP_URL: http://transakt-mcp:8001/mcp
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    ports:
+      - "8003:8003"
+    volumes:
+      - sentinel-cases:/data
+    depends_on:
+      kafka:
+        condition: service_healthy
+      transakt-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  sentinel-scores:
+  sentinel-cases:
