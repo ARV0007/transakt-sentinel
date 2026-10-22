@@ -76,8 +76,9 @@ cmd_bootstrap() {
   echo "✓ Admin $ADMIN_EMAIL ready. Sentinel services log in with it automatically."
 }
 
-cmd_simulate() { need "$PY" "Install it with: brew install python@3.12"; "$PY" simulator/simulate.py "$@"; }
-cmd_eval()     { need "$PY" "Install it with: brew install python@3.12"; "$PY" eval/evaluate.py "$@"; }
+# -u: unbuffered output, so progress shows up live even when piped into a log.
+cmd_simulate() { need "$PY" "Install it with: brew install python@3.12"; "$PY" -u simulator/simulate.py "$@"; }
+cmd_eval()     { need "$PY" "Install it with: brew install python@3.12"; "$PY" -u eval/evaluate.py "$@"; }
 
 case "${1:-help}" in
   up)        cmd_up ;;

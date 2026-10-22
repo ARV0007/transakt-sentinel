@@ -46,5 +46,12 @@ pauses for a human — durably, so a paused case survives a restart."
 6. *`./sentinel.sh reset` would also delete Transakt's Docker database volume* (shared compose project).
    It now asks for confirmation.
 
+7. *The live demo log looked frozen after bootstrap.* Python block-buffers `print` when stdout is a
+   pipe, so the simulator's progress only appeared at exit. `sentinel.sh` now runs Python with `-u`.
+
+**Verified on real infrastructure (23 Oct, 02:34):** `./sentinel.sh demo` on the Mac — all seven
+containers built and healthy, admin bootstrap OK, 199 payments, 0 failed. 6/6 incidents became cases,
+all `HOLD_PAYOUT`; 0 cases on normal merchants; precision 0.947, recall 0.818; send→score p50 2.7 s.
+
 **Earlier the same day:** the first `mkdir`/`git init` ran in a new Terminal tab sitting in `~`, so they
 landed in the home folder — the wrong-directory trap again. Rule: run `pwd` before anything project-relative.

@@ -31,6 +31,24 @@ Transakt ──payment.settled──► risk-scorer ──fraud.cases──► i
 - **Event-driven microservices** split by speed, scaling and failure behaviour, at-least-once
   Kafka consumers made idempotent by primary keys.
 
+## Results
+
+A real run on a MacBook Air: Transakt + Kafka + Postgres in Docker, 6 minutes of simulated
+traffic, 199 payments with 6 planted fraud incidents (`./sentinel.sh demo`, 23 Oct 2026):
+
+| Metric | Result |
+|---|---|
+| Fraud incidents that became a case | **6 / 6** — all recommended `HOLD_PAYOUT` |
+| Cases opened on the 20 normal merchants | **0** |
+| Payment-level precision / recall | 0.947 / 0.818 |
+| Recall by pattern | new-merchant blitz 24/24 · amount spike 4/4 · velocity burst 44/60 |
+| Payment → risk score | 2.7 s median, 5.0 s p95 (mostly Transakt's 5 s outbox sweep); the model itself scores in ~1 ms |
+| Traffic that reached the LLM step | 3% (one case per incident, not one per payment) |
+
+Velocity recall is the lowest by design: the first few payments of a burst *are* normal-looking,
+and the system flags it once the pace is unmistakable (first flag 14–22 s into the burst).
+Training data is synthetic, so treat these as a working baseline, not a production claim.
+
 ## Run it locally
 
 You need Docker Desktop, Python 3.12 and Transakt cloned next to this repo
