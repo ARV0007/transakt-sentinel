@@ -50,3 +50,21 @@ jobs:
                       -r services/risk-scorer/requirements.txt \
                       -r services/investigator/requirements.txt
       - run: python e2e/run_e2e.py --minutes 1.5
+
+  docker:
+    name: docker images (code readable by the service user)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Reproduce the 23 Oct failure: files that are owner-read-only on the build
+      # machine. Every image must still be able to import its own code as the
+      # unprivileged user it runs as — which is what COPY --chown guarantees.
+      - run: chmod -R go-rwx services
+      - name: build and import-check each service
+        run: |
+          set -e
+          for s in transakt-mcp:app.server risk-scorer:app.main investigator:app.main; do
+            svc=${s%%:*}; mod=${s##*:}
+            docker build -q -t sentinel-$svc services/$svc
+            docker run --rm -e MCP_TOKEN=ci sentinel-$svc python -c "import $mod; print('$svc ok as', __import__('getpass').getuser())"
+          done

@@ -181,3 +181,25 @@ an internal node name in text written for a person. Now "from the velocity analy
 **Showcase:** screenshots of the review page (light, dark, a decided case, phone) taken with Playwright from a live
 e2e run, in `docs/images/`; a timed 2-minute recording script in `docs/DEMO.md`; `run_e2e.py --keep-running` for a
 Docker-free demo.
+
+---
+
+## Day 3 (cont.) — the v1.2 Docker run failed on file permissions
+
+`./sentinel.sh demo` on the Mac: everything built, then transakt-mcp and risk-scorer exited at once with
+`PermissionError: [Errno 13] Permission denied: '/app/app/server.py'`.
+
+**Cause.** The source files on the Mac were owner-read-only (mode 600). `COPY` keeps the build machine's
+permissions and makes root the owner, and the services then run as the unprivileged `sentinel` user — who
+could not read its own code. Tests, the e2e run and CI never build the images, so none of them could see it.
+
+**Fix.** Create the user *before* copying and `COPY --chown=sentinel:sentinel`, so the service owns its code
+whatever mode the files arrive with. Reproduced with Docker before fixing: the old Dockerfile shape gives
+"Permission denied" on a mode-600 file, the `--chown` shape reads it. New CI job builds all three images from a
+deliberately `chmod -R go-rwx` checkout and imports each service's code as the user it runs as.
+
+**Also:** `sentinel.sh` now prints the logs of any container that exits during `up` — this run's failure only
+said `exited (1)` until that existed.
+
+**Lesson.** "Tested" means tested in the shape it ships in. The unit, e2e and CI runs all used plain Python; the
+first time the Dockerfiles met unusual file permissions was on the user's laptop.
