@@ -66,8 +66,9 @@ A 2-minute walkthrough script is in [docs/DEMO.md](docs/DEMO.md).
 
 ## Results
 
-A real run on a MacBook Air: Transakt + Kafka + Postgres in Docker, 6 minutes of simulated
-traffic, 199 payments with 6 planted fraud incidents (`./sentinel.sh demo`, 23 Oct 2026):
+A real run on a MacBook Air: Transakt + Kafka + Postgres + Redis in Docker, 6 minutes of simulated
+traffic, 199 payments with 6 planted fraud incidents (`./sentinel.sh demo`, 23 Oct 2026; re-run on
+v1.2 with MCP auth, Redis-backed history and monitoring, same outcome — 6/6, 0 false cases):
 
 | Metric | Result |
 |---|---|

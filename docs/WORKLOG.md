@@ -207,3 +207,9 @@ said `exited (1)` until that existed.
 
 **Lesson.** "Tested" means tested in the shape it ships in. The unit, e2e and CI runs all used plain Python; the
 first time the Dockerfiles met unusual file permissions was on the user's laptop.
+
+**Verified on real infrastructure (23 Oct, 17:38) — v1.2:** after the `--chown` fix, `./sentinel.sh demo` on the
+Mac brought every container up healthy, bootstrap OK, 199 payments, 0 failed. 6/6 incidents became `HOLD_PAYOUT`
+cases, 0 cases on normal merchants, precision 0.947 / recall 0.807, send→score p50 2.6 s. Every case carried
+specialist evidence, so the investigator → transakt-mcp bearer-token path worked, and the scorer ran on its
+Redis-backed history throughout.
