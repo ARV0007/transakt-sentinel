@@ -1,5 +1,7 @@
 # Transakt Sentinel
 
+[![CI](https://github.com/ARV0007/transakt-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/ARV0007/transakt-sentinel/actions/workflows/ci.yml)
+
 **An agentic fraud-investigation system for the [Transakt](https://github.com/ARV0007/transakt) payment gateway.**
 Every settled payment is scored by a fast ML model; risky ones are investigated by a
 LangGraph agent that gathers evidence through **MCP** tools and writes a recommendation

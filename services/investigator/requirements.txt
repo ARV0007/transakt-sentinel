@@ -9,4 +9,6 @@ langchain-openai>=1.0,<2
 langchain-mcp-adapters>=0.3.2,<0.4
 # See transakt-mcp/requirements.txt for why MCP stays below 2.0 for now.
 mcp>=1.27,<2
+# A2A v1.0 (protobuf-based SDK): agent card + JSON-RPC SendMessage.
+a2a-sdk>=1.2,<2
 prometheus_client>=0.20

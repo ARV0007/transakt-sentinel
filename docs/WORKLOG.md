@@ -135,3 +135,23 @@ over A2A so other agents can request investigations while a human still makes th
    Switched to `grep -E`.
 3. `pkill -f prometheus` in a one-liner matched (and killed) the shell running it, because the pattern was on
    its own command line. Use `pgrep` on a pattern that can't match the caller.
+
+---
+
+## Day 3 — 23 Oct 2026 · Published, and the first CI run failed
+
+Pushed to **github.com/ARV0007/transakt-sentinel**. CI ran on the first push: transakt-mcp passed; investigator
+(pytest exit 2) and risk-scorer (exit 1) failed.
+
+**Cause:** both were "works on my machine". The development environment had packages installed by hand that
+the requirements files never listed — `a2a-sdk` for the investigator (so `import` failed before any test ran:
+exit code 2 is pytest's "couldn't collect"), and the Lua support for `fakeredis` that the scorer's Redis tests
+need (tests ran and failed: exit code 1).
+
+**Fix:** added `a2a-sdk>=1.2,<2` and `fakeredis[lua]`; then reproduced CI exactly — a fresh Python 3.12 venv
+per service with *only* that service's requirements — before pushing again: 12 / 24 / 26 passing and the e2e
+run green. Also bumped `actions/checkout` v4→v5 and `actions/setup-python` v5→v6 (Node 20 deprecation).
+
+**Lesson:** CI's first job is to be the clean machine you don't have. Test in a fresh venv built from the
+requirements file before trusting "all green locally". **Interview line:** "My first CI run caught two
+undeclared dependencies that my own environment had been hiding."
