@@ -78,6 +78,9 @@ async def replay(events, scores_db, model_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=1.5)
+    ap.add_argument("--keep-running", action="store_true",
+                    help="after the checks, leave everything up (review page on :18003) until Ctrl-C — "
+                         "a Docker-free demo")
     args = ap.parse_args()
 
     tmp = tempfile.mkdtemp(prefix="sentinel-e2e-")
@@ -173,6 +176,14 @@ def main():
         print("\n✓ end-to-end checks passed")
         print("  (Ignore the latency row here: this harness replays every event AFTER the simulation "
               "ends. With real Kafka, send-to-score is roughly the outbox's 5 s sweep.)")
+        if args.keep_running:
+            print(f"\nStill running. Review page: http://127.0.0.1:{INV}   Agent card: "
+                  f"http://127.0.0.1:{INV}/.well-known/agent-card.json   Ctrl-C to stop.", flush=True)
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                pass
     finally:
         for p in procs:
             p.terminate()

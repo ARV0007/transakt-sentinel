@@ -155,3 +155,29 @@ run green. Also bumped `actions/checkout` v4→v5 and `actions/setup-python` v5�
 **Lesson:** CI's first job is to be the clean machine you don't have. Test in a fresh venv built from the
 requirements file before trusting "all green locally". **Interview line:** "My first CI run caught two
 undeclared dependencies that my own environment had been hiding."
+
+---
+
+## Day 3 (cont.) — CI green; the real LLM client tested; screenshots
+
+**CI:** second push (`18bdedb`) green on every job — three unit suites (with a real Redis service) and the
+3½-minute end-to-end run.
+
+**LLM over real HTTP.** Every earlier LLM test used `FakeLLM`, which bypasses the actual client, so the request
+we send to Hugging Face had never been checked. `tests/test_llm_http.py` now runs the real `ChatOpenAI` against a
+local OpenAI-compatible server: request shape (bearer key, model, temperature 0, system + user messages with the
+facts as JSON), a reply wrapped in a code fence with chatter around it, an invented number caught by the grounding
+check, and 401 / 429 / 503 all falling back to rules. A real model run still needs an API key.
+
+**Mistakes & fixes**
+1. *Mocking the wrong library.* `respx` intercepted nothing: the OpenAI SDK v3 moved from `httpx` to its fork
+   `httpx2`. A real localhost server doesn't care which HTTP library the client uses.
+2. *"Event loop is closed"* on the second test: langchain-openai caches its HTTP client, and pytest-asyncio gave
+   each test a new loop. The service runs on one loop; the test file now shares one too (`loop_scope="module"`).
+
+**Polish caught by looking at the screenshots:** the rules' rationale read "Fraud signals from velocity_analyst" —
+an internal node name in text written for a person. Now "from the velocity analyst".
+
+**Showcase:** screenshots of the review page (light, dark, a decided case, phone) taken with Playwright from a live
+e2e run, in `docs/images/`; a timed 2-minute recording script in `docs/DEMO.md`; `run_e2e.py --keep-running` for a
+Docker-free demo.

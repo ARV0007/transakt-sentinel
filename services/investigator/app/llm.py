@@ -70,7 +70,7 @@ def rule_recommendation(findings):
     if signals:
         parts = "; ".join(ok[k]["summary"] for k in signals)
         return {"action": "HOLD_PAYOUT", "confidence": round(min(0.95, 0.6 + 0.15 * len(signals)), 2),
-                "rationale": f"Fraud signals from {', '.join(signals)}: {parts}"}
+                "rationale": f"Fraud signals from the {', '.join(k.replace('_', ' ') for k in signals)}: {parts}"}
     return {"action": "ALLOW", "confidence": 0.6,
             "rationale": "Model flagged the payment but no specialist found a supporting pattern."}
 

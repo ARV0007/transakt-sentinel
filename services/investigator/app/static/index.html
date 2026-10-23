@@ -23,7 +23,7 @@
   header h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
   header .stats { color: var(--muted); font-size: 13px; }
   main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-height: calc(100vh - 58px); }
-  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); } }
   #list { border-right: 1px solid var(--line); overflow-y: auto; }
   .filters { display: flex; gap: 6px; padding: 12px 16px; flex-wrap: wrap; }
   .filters button { border: 1px solid var(--line); background: var(--panel); color: var(--ink);
@@ -55,8 +55,8 @@
              font: inherit; background: var(--bg); color: var(--ink); }
   .actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .actions button { border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
-  .confirm { background: var(--hold); color: #fff; }
-  .dismiss { background: var(--allow); color: #fff; }
+  .confirm { background: var(--hold); color: var(--bg); }   /* --bg: light text on dark red, dark text on light red */
+  .dismiss { background: var(--allow); color: var(--bg); }
   .empty { color: var(--muted); padding: 40px 0; }
   code { font-family: ui-monospace, monospace; font-size: 13px; }
 </style>

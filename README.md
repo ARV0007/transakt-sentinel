@@ -47,6 +47,23 @@ Transakt ──payment.settled──► risk-scorer ──fraud.cases──► i
 - **Event-driven microservices** split by speed, scaling and failure behaviour, at-least-once
   Kafka consumers made idempotent by primary keys.
 
+## Screenshots
+
+An investigation waiting for an analyst: the evidence each specialist gathered through MCP, the
+recommendation, and the two buttons only a human can press.
+
+![Review page — a velocity-burst case](docs/images/review-case-light.png)
+
+<details><summary>Dark mode, a decided case, and the phone layout</summary>
+
+![Review page — dark mode](docs/images/review-case-dark.png)
+![A decided case](docs/images/review-decided.png)
+<img src="docs/images/review-mobile.png" alt="Review page on a phone" width="320">
+
+</details>
+
+A 2-minute walkthrough script is in [docs/DEMO.md](docs/DEMO.md).
+
 ## Results
 
 A real run on a MacBook Air: Transakt + Kafka + Postgres in Docker, 6 minutes of simulated
@@ -99,6 +116,7 @@ everything else works the same. **Tracing:** set `LANGSMITH_TRACING=true` and `L
 ```bash
 cd services/<service> && pip install -r requirements-dev.txt && pytest
 python e2e/run_e2e.py      # whole pipeline against a fake Transakt (no Java/Kafka needed)
+python e2e/run_e2e.py --keep-running   # same, then leaves the review page up on :18003 — a Docker-free demo
 ```
 
 CI runs all unit suites plus the end-to-end run on every push.

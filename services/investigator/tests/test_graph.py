@@ -124,3 +124,8 @@ def test_rule_recommendation_confidence_grows_with_signals():
     one = rule_recommendation({"a": {"signal": True, "summary": "x"}, "b": {"signal": False, "summary": "y"}})
     two = rule_recommendation({"a": {"signal": True, "summary": "x"}, "b": {"signal": True, "summary": "y"}})
     assert one["confidence"] < two["confidence"] <= 0.95
+
+
+def test_amounts_read_like_rupees():
+    from app.graph import inr
+    assert inr(1_884_800) == "Rs 18,848" and inr(166_997) == "Rs 1,669.97" and inr(50) == "Rs 0.50"

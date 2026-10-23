@@ -55,6 +55,13 @@ def rupees(paise):
     return None if paise is None else round(paise / 100, 2)
 
 
+def inr(paise):
+    """For text a person reads: Rs 18,848 or Rs 1,669.97 — never Rs 18848.0."""
+    if paise is None:
+        return "Rs ?"
+    return f"Rs {paise // 100:,}" if paise % 100 == 0 else f"Rs {paise / 100:,.2f}"
+
+
 # ---------------------------------------------------------------- specialists
 # Each returns {"signal": bool, "summary": str, "facts": {...}} — or
 # {"error": "..."} when it could not gather evidence. An error is recorded,
@@ -85,13 +92,13 @@ async def amount_analyst(state, tools):
     if not med:
         big = p["amount_paise"] >= 1_000_000
         return {"signal": big,
-                "summary": f"no earlier payments to compare with; this one is Rs {rupees(p['amount_paise'])}",
+                "summary": f"no earlier payments to compare with; this one is {inr(p['amount_paise'])}",
                 "facts": {"amount_rupees": rupees(p["amount_paise"]), "baseline_payments": 0}}
     ratio = round(p["amount_paise"] / med, 1)
     signal = ratio >= 10
     return {
         "signal": signal,
-        "summary": (f"Rs {rupees(p['amount_paise'])} is {ratio}x this merchant's median of Rs {rupees(med)} "
+        "summary": (f"{inr(p['amount_paise'])} is {ratio}x this merchant's median of {inr(med)} "
                     f"over {prof['payments']} payments"),
         "facts": {"amount_rupees": rupees(p["amount_paise"]), "median_rupees": rupees(med),
                   "p95_rupees": rupees(prof.get("p95_paise")), "ratio_to_median": ratio,
@@ -109,7 +116,7 @@ async def merchant_profile_analyst(state, tools):
     return {
         "signal": signal,
         "summary": (f"account is {age_txt} with {day['payments']} payments in 24 h; "
-                    f"this payment is Rs {rupees(p['amount_paise'])}"),
+                    f"this payment is {inr(p['amount_paise'])}"),
         "facts": {"merchant_name": prof.get("name"), "account_age_minutes": age,
                   "payments_24h": day["payments"], "amount_rupees": rupees(p["amount_paise"])},
     }
