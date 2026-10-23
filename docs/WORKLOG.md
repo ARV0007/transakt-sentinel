@@ -248,3 +248,16 @@ Redis-backed history throughout.
 model call and one pipelined Redis round trip — 10× throughput with byte-identical results. Along the way I found
 and fixed an at-least-once bug that could lose a case, and put a gate in front of retraining so analysts' mistakes
 can't teach the model to miss fraud."
+
+**Consumer loops under test (Day 4, late).** Neither Kafka loop had ever run in a test — only on the Mac. Both now
+run against in-memory fakes of aiokafka's classes (no broker reachable from the build environment: Docker Hub,
+Apache and Maven Central are all blocked there):
+- *scorer:* batched polls, time order restored across partitions (features identical to true-order scoring),
+  every commit straight after a successful flush, malformed messages skipped, and a broker failure mid-flush
+  losing no case.
+- *investigator:* each commit after its case row exists; poison messages skipped *and* committed.
+
+**The fake has to be honest or the test proves nothing.** The first fake producer logged a message as delivered
+when `send()` was called. A planted mutation (removing the re-send-on-redelivery fix) then *passed* the crash test.
+Real producers buffer until `flush()`; once the fake did the same, the mutation failed the test, as it should.
+Every new test here was checked the same way — plant the bug, watch it fail, restore.
