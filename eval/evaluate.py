@@ -39,6 +39,36 @@ def p95(xs):
     return xs[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))] if xs else None
 
 
+def threshold_sweep(labels, scored, thresholds=(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)):
+    """
+    What would a different cut-off have done to this run? Every payment's score is
+    stored, so the whole run can be re-flagged at any threshold without re-running it.
+
+    "Honest merchants with a case" is the false-alarm cost an analyst feels: the
+    investigator opens one case per merchant, so one flagged payment from an honest
+    shop is one wasted investigation, however many more follow it.
+    """
+    fraud_merchants = {r["merchant_id"] for r in labels if r["label"]}
+    incidents = defaultdict(list)
+    for r in labels:
+        if r["incident"]:
+            incidents[r["incident"]].append(r["payment_id"])
+    rows = []
+    for t in thresholds:
+        flagged = {pid for pid, s in scored.items() if s["score"] >= t}
+        tp = sum(1 for r in labels if r["label"] and r["payment_id"] in flagged)
+        fp = sum(1 for r in labels if not r["label"] and r["payment_id"] in flagged)
+        fn = sum(1 for r in labels if r["label"] and r["payment_id"] not in flagged)
+        honest_cases = len({r["merchant_id"] for r in labels
+                            if r["payment_id"] in flagged and r["merchant_id"] not in fraud_merchants})
+        rows.append({"threshold": t, "flagged": tp + fp,
+                     "precision": round(tp / (tp + fp), 3) if tp + fp else None,
+                     "recall": round(tp / (tp + fn), 3) if tp + fn else None,
+                     "incidents_caught": f"{sum(1 for ids in incidents.values() if flagged & set(ids))}/{len(incidents)}",
+                     "honest_merchants_with_a_case": honest_cases})
+    return rows
+
+
 def wait_for_pipeline(labels, scorer, investigator, timeout):
     """The outbox publishes every 5 s and the LLM can take seconds per case, so
     give the pipeline time to drain before grading it."""
@@ -150,6 +180,8 @@ def main():
                  "llm_disagreed_with_rules": llm_disagreed, "llm_failed_fell_back_to_rules": llm_fell_back},
         "latency_seconds": {"send_to_score_p50": round(median(lags), 2) if lags else None,
                             "send_to_score_p95": round(p95(lags), 2) if lags else None},
+        "threshold_sweep": threshold_sweep(labels, scored),
+        "threshold_in_use": get(f"{args.scorer}/health").get("threshold"),
         "graded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -180,6 +212,14 @@ def main():
         "|---|---|---|---|---|---|",
         *[f"| {i['incident']} | `{i['merchant']}` | {i['flagged']}/{i['payments']} | {'yes' if i['case'] else 'no'} "
           f"| {i['recommendation'] or '—'} | {i['seconds_to_first_flag']} s |" for i in il["rows"]],
+        "", "## Threshold sweep", "",
+        f"The same run re-flagged at other cut-offs (the scorer is using {results['threshold_in_use']}). Every "
+        "honest merchant with a case is an analyst's wasted investigation; every missed incident is fraud paid out.",
+        "", "| Threshold | Payments flagged | Precision | Recall | Incidents caught | Honest merchants with a case |",
+        "|---|---|---|---|---|---|",
+        *[f"| {r['threshold']}{' ←' if r['threshold'] == results['threshold_in_use'] else ''} | {r['flagged']} | "
+          f"{r['precision']} | {r['recall']} | {r['incidents_caught']} | {r['honest_merchants_with_a_case']} |"
+          for r in results["threshold_sweep"]],
     ]
     with open(os.path.join(args.out, "latest.md"), "w") as f:
         f.write("\n".join(md) + "\n")

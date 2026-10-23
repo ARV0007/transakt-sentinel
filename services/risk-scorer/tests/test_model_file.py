@@ -72,3 +72,45 @@ def test_analyst_feedback_teaches_the_model(tmp_path):
 def test_missing_feedback_file_means_none(tmp_path):
     from app.train import train
     assert train(feedback_path=str(tmp_path / "nope.json"))["metrics"]["feedback_rows"] == 0
+
+
+# ---------------------------------------------------------------- the retraining gate
+
+BLITZ = {"count_2m": 3, "count_10m": 3, "history_count": 2, "amount_ratio": None,
+         "log_amount": 6.48, "merchant_age_min": 4.0, "failed_ratio_10m": 0.0}
+
+
+def _feedback(tmp_path, rows):
+    import json
+    path = tmp_path / "feedback.json"
+    path.write_text(json.dumps([{"features": f, "label": l, "decided_at": t} for t, (f, l) in enumerate(rows)]))
+    return str(path)
+
+
+def test_mistaken_dismissals_are_caught_by_the_gate(tmp_path):
+    import math
+    from app.train import train
+    # Older decisions: analysts wrongly dismissed new-merchant blitzes, 12 times.
+    # Newest decisions: they (correctly) confirmed the same pattern as fraud.
+    path = _feedback(tmp_path, [(BLITZ, 0)] * 12 + [(BLITZ, 1)] * 4)
+    b = train(feedback_path=path)
+    assert b["metrics"]["gate"].startswith("REJECTED")
+    assert b["metrics"]["holdout_agreement_candidate"] == "0/4"
+    assert "+fb" not in b["version"]                                    # the old model shipped
+    blitz = [[BLITZ[k] if BLITZ[k] is not None else math.nan for k in b["feature_order"]]]
+    assert b["model"].predict_proba(blitz)[0, 1] > 0.5                 # still catches the fraud
+
+
+def test_consistent_decisions_pass_the_gate(tmp_path):
+    from app.train import train
+    flash_sale = {"count_2m": 14, "count_10m": 20, "history_count": 120, "amount_ratio": 1.0,
+                  "log_amount": 4.7, "merchant_age_min": 50_000.0, "failed_ratio_10m": 0.0}
+    b = train(feedback_path=_feedback(tmp_path, [(flash_sale, 0)] * 16))
+    assert b["metrics"]["gate"] == "passed" and b["version"].endswith("+fb16")
+    assert b["metrics"]["holdout_decisions"] == 4
+
+
+def test_too_few_decisions_skip_the_gate(tmp_path):
+    from app.train import train
+    b = train(feedback_path=_feedback(tmp_path, [(BLITZ, 1)] * 5))
+    assert b["metrics"]["gate"].startswith("skipped") and b["version"].endswith("+fb5")

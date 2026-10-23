@@ -67,6 +67,12 @@ class RiskModel:
         self.threshold = float(os.environ.get("RISK_THRESHOLD", bundle.get("threshold", 0.5)))
         self.version = bundle.get("version")
         self.source = bundle.get("source")
+        self.gate = (bundle.get("metrics") or {}).get("gate", "no feedback")
 
     def score(self, feats):
-        return float(self.model.predict_proba([vector(feats)])[0, 1])
+        return self.score_many([feats])[0]
+
+    def score_many(self, feats_list):
+        """One model call for the whole batch: the call's fixed overhead (~0.7 ms)
+        dwarfs the per-row cost, so this is what makes batching pay."""
+        return [float(p) for p in self.model.predict_proba([vector(f) for f in feats_list])[:, 1]]

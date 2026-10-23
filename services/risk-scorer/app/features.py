@@ -58,6 +58,10 @@ class MemoryState:
             self.total[merchant_id] += 1
         return prior, total_before
 
+    async def observe_many(self, items):
+        """items: (merchant_id, ts, payment_id, amount, status), in arrival order."""
+        return [await self.observe(*it) for it in items]
+
 
 # Runs inside Redis as one step: nothing else touches these keys until it
 # returns. That is what makes two scorer replicas safe on the same merchant.
@@ -101,17 +105,42 @@ class RedisState:
         self.prefix = prefix
         self.script = redis.register_script(OBSERVE_LUA)
 
-    async def observe(self, merchant_id, ts, payment_id, amount, status):
+    def _call(self, merchant_id, ts, payment_id, amount, status):
         keys = [f"{self.prefix}:events:{merchant_id}", f"{self.prefix}:count:{merchant_id}"]
-        total, rows = await self.script(keys=keys, args=[
-            ts, KEEP_SECONDS, payment_id, f"{payment_id}|{amount}|{status}",
-            MAX_PER_MERCHANT, KEEP_SECONDS + 3600, 30 * 24 * 3600])
+        args = [ts, KEEP_SECONDS, payment_id, f"{payment_id}|{amount}|{status}",
+                MAX_PER_MERCHANT, KEEP_SECONDS + 3600, 30 * 24 * 3600]
+        return keys, args
+
+    @staticmethod
+    def _decode(result):
+        total, rows = result
         prior = []
         for i in range(0, len(rows), 2):
             member = rows[i].decode() if isinstance(rows[i], bytes) else rows[i]
             _, amt, st = member.split("|", 2)
             prior.append((float(rows[i + 1]), int(amt), st))
         return prior, int(total)
+
+    async def observe(self, merchant_id, ts, payment_id, amount, status):
+        keys, args = self._call(merchant_id, ts, payment_id, amount, status)
+        return self._decode(await self.script(keys=keys, args=args))
+
+    async def observe_many(self, items):
+        """
+        A whole batch in ONE round trip. Redis runs the scripts in the order they
+        were sent, so each payment still sees every earlier one — including earlier
+        payments from the same batch — exactly as one-at-a-time would. Each script is
+        still atomic on its own; transaction=False just means other clients may
+        interleave between them, which they could already.
+        """
+        if not items:
+            return []
+        async with self.r.pipeline(transaction=False) as pipe:
+            for it in items:
+                keys, args = self._call(*it)
+                await self.script(keys=keys, args=args, client=pipe)
+            results = await pipe.execute()
+        return [self._decode(r) for r in results]
 
 
 def state_from_env(url):
@@ -130,22 +159,31 @@ class FeatureBuilder:
 
     async def compute(self, merchant_id, ts, amount_paise, status,
                       merchant_created_ts=None, payment_id=None):
-        """
-        Features for ONE payment, then remember it.
+        """Features for ONE payment, then remember it."""
+        return (await self.compute_many([(merchant_id, ts, amount_paise, status,
+                                          merchant_created_ts, payment_id)]))[0]
 
-        observe() returns history as it was BEFORE this payment (and records the
+    async def compute_many(self, items):
+        """
+        items: (merchant_id, ts, amount_paise, status, merchant_created_ts, payment_id),
+        in arrival order. Returns one feature dict per item.
+
+        observe() returns history as it was BEFORE each payment (and records the
         payment in the same step), so a Rs 50,000 spike is compared with the old
         baseline rather than one it has already raised.
         """
-        payment_id = payment_id or f"anon-{ts}-{amount_paise}"
-        prior, total_seen = await self.state.observe(merchant_id, ts, payment_id, amount_paise, status)
-        prior_amounts = [a for _, a, _ in prior]
+        calls = [(m, ts, pid or f"anon-{ts}-{amt}", amt, st) for m, ts, amt, st, _, pid in items]
+        observed = await self.state.observe_many(calls)
+        return [self._build(prior, total, ts, amt, st, created)
+                for (prior, total), (_, ts, amt, st, created, _) in zip(observed, items)]
 
+    @staticmethod
+    def _build(prior, total_seen, ts, amount_paise, status, merchant_created_ts):
+        prior_amounts = [a for _, a, _ in prior]
         recent_2m = [e for e in prior if ts - e[0] <= 120]
         recent_10m = [e for e in prior if ts - e[0] <= 600]
         failed_10m = sum(1 for e in recent_10m if e[2] == "FAILED") + (status == "FAILED")
-
-        feats = {
+        return {
             "count_2m": len(recent_2m) + 1,
             "count_10m": len(recent_10m) + 1,
             "history_count": total_seen,
@@ -154,8 +192,6 @@ class FeatureBuilder:
             "merchant_age_min": ((ts - merchant_created_ts) / 60) if merchant_created_ts else math.nan,
             "failed_ratio_10m": failed_10m / (len(recent_10m) + 1),
         }
-
-        return feats
 
 
 def vector(feats):

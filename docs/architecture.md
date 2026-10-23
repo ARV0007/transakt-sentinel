@@ -1,6 +1,10 @@
 # Transakt Sentinel — architecture
 
-**Version 1.2** · 23 Oct 2026
+**Version 1.3** · 23 Oct 2026
+
+*1.3: the scorer scores in batches (one model call, one pipelined Redis round trip per Kafka poll) and
+re-sends a flagged payment's case on redelivery; retraining is gated on held-out analyst decisions; the eval
+report sweeps thresholds.*
 
 *1.2: MCP server requires a bearer token; scorer history updated atomically by a Lua script;
 Prometheus metrics on every service plus a provisioned Grafana dashboard; analyst decisions
@@ -79,6 +83,10 @@ behaviour** — not a wish to have many services.
 | Bearer token on transakt-mcp (1.2) | It holds ADMIN credentials for Transakt; without auth, anything that reaches :8001 can read every merchant's payments | A shared secret, not OAuth 2.1 — fine for two services we run, not for third-party clients |
 | Lua script for read-and-record (1.2) | One atomic step inside Redis; two replicas can no longer both read before either writes. A naive read-then-write lost 198 of 200 updates under the same test | Logic split across Python and Lua |
 | A2A endpoint on the investigator (1.2) | Lets other agents request an investigation through a standard protocol; reuses the same graph and case table | Another public surface: token-protected, recommends only |
+| Score a Kafka poll as one batch (1.3) | The model call costs ~0.7 ms however many rows it scores; batching took Redis-backed throughput from 355/s to 3,505/s | Latency within a batch is shared; features still computed in order |
+| Pipeline the batch's Redis scripts (1.3) | One round trip per batch. Redis runs pipelined scripts in send order, so each payment still sees the earlier ones — results identical to one-at-a-time (tested) | — |
+| Re-send a flagged case on redelivery (1.3) | The score is saved before the case is sent; without this, a crash between the two lost the case forever | Duplicate case messages, absorbed by the investigator's per-payment table |
+| Retraining gate on the newest held-out decisions (1.3) | A few mistaken analyst decisions must not teach the model to wave fraud through. Newest, not random: the question is "does it agree with what analysts decide now" | Needs ≥ 8 decisions to judge; below that the gate is skipped and says so |
 | Analyst decisions weighted ×25 in retraining (1.2) | Human labels are scarce and the only data about real false alarms | An analyst's mistakes are learned too; review `/feedback` before retraining |
 | Model saved with skops, allow-listed types (1.1) | A pickle runs code on load, so a tampered Hub file could take over the scorer | One allow-list entry to review when the model type changes |
 
@@ -102,7 +110,7 @@ Reason codes: `VELOCITY` (≥ 8 payments in 2 min), `AMOUNT_SPIKE` (≥ 10× own
 - `payment.settled` is keyed by payment id, so two scorer replicas can process one merchant's payments in a
   different order than they happened. History updates are atomic (Lua), but ordering isn't guaranteed;
   re-keying by merchant in Transakt's outbox would fix it.
-- Retraining is a manual `./sentinel.sh retrain` with no holdout check on feedback rows; a production loop
-  would gate deployment on a held-out set of past decisions.
+- Retraining is manual (`./sentinel.sh retrain`). The gate compares against the synthetic-only model, not the
+  model currently deployed; tracking deployed versions in a registry would make that comparison exact.
 - The A2A endpoint returns once the recommendation is ready (up to `A2A_TIMEOUT_S`); streaming and push
   notifications are not implemented.

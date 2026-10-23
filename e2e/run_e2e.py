@@ -67,9 +67,9 @@ async def replay(events, scores_db, model_path):
     from app.transakt_client import parse_ts
     scorer = build_scorer()
     opened = 0
-    for e in events:
-        case = await scorer.handle(e, parse_ts(e["_ts"]).timestamp())
-        if case:
+    items = [(e, parse_ts(e["_ts"]).timestamp()) for e in events]
+    for k in range(0, len(items), 50):                 # in batches, like the Kafka consumer
+        for case in await scorer.handle_many(items[k:k + 50]):
             http("POST", f"http://127.0.0.1:{INV}/cases", case)
             opened += 1
     return opened

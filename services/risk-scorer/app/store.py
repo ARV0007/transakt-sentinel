@@ -40,16 +40,30 @@ class ScoreStore:
         with self.lock:
             self.conn.executescript(SCHEMA)
 
+    def get(self, payment_id):
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM scores WHERE payment_id=?", (payment_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["flagged"], d["reasons"], d["features"] = bool(d["flagged"]), json.loads(d["reasons"]), json.loads(d["features"])
+        return d
+
     def seen(self, payment_id):
         with self.lock:
             return self.conn.execute("SELECT 1 FROM scores WHERE payment_id=?", (payment_id,)).fetchone() is not None
 
     def save(self, payment_id, merchant_id, amount_paise, status, score, flagged, reasons, feats, event_ts):
+        self.save_many([(payment_id, merchant_id, amount_paise, status, score, flagged, reasons, feats, event_ts)])
+
+    def save_many(self, rows):
+        """All rows in one transaction: one disk sync per batch, not per payment."""
+        now = time.time()
         with self.lock, self.conn:
-            self.conn.execute(
+            self.conn.executemany(
                 "INSERT OR IGNORE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (payment_id, merchant_id, amount_paise, status, score, int(flagged),
-                 json.dumps(reasons), json.dumps(_clean(feats)), event_ts, time.time()))
+                [(pid, mid, amt, st, score, int(flagged), json.dumps(reasons), json.dumps(_clean(feats)), ts, now)
+                 for pid, mid, amt, st, score, flagged, reasons, feats, ts in rows])
 
     def list(self, flagged=None, limit=200):
         q, args = "SELECT * FROM scores", []

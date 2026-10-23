@@ -170,3 +170,37 @@ decisions and only ship a retrained model that does at least as well on them.
 
 Sentinel's A2A skill runs the same graph an analyst sees and returns the recommendation as a task
 artifact. It is a recommendation, not a decision: the case still waits on the review page.
+
+## Batching: paying a fixed cost once (v1.3)
+
+Scoring one payment with scikit-learn costs ~0.7 ms. Scoring 100 costs ~1 ms. Almost all of the cost is the call
+itself (input checks, setting up the tree walk), not the rows. So the consumer now asks Kafka for up to 200
+messages at once (`getmany`), computes features for each **in order**, scores them in **one** model call and
+writes them in **one** SQLite transaction. Throughput went from ~465 to ~15,000 payments/s in memory.
+
+With Redis the remaining cost was one network round trip per payment. **Pipelining** sends all of a batch's Lua
+scripts in one go. The subtle part is why that's still correct: Redis executes a pipeline's commands in the order
+it received them, so payment #7 of a merchant still sees payments #1–6 — even when they're in the same batch.
+A test computes a whole batch through one pipeline and checks every feature against one-at-a-time.
+
+## At-least-once, end to end (v1.3)
+
+The scorer saves a score, then sends the case. If it crashes in between, Kafka redelivers the payment — and v1.2
+said "already scored, skip it", so the case was gone. Now a redelivered *flagged* payment re-sends its case from
+the stored score. That can produce duplicates, which is fine: the investigator's `case_payments` table has the
+payment id as its primary key, so a repeat attaches to nothing. **At-least-once delivery + idempotent receivers =
+effectively exactly-once results.** Same idea as Transakt's outbox and its stable event ids.
+
+## Gating a retrained model (v1.3)
+
+Learning from analysts is only safe if a few wrong decisions can't undo it. Before shipping, the newest 25% of
+decisions are held back; a candidate trained on the rest must (1) agree with those held-out decisions at least as
+often as the current model, and (2) keep synthetic-fraud recall within 2 points. Pass → retrain on everything and
+ship. Fail → keep the old model and say why (`/health` → `retraining_gate`). Holding out the *newest* rather than
+a random sample matters: the question is whether the model matches what analysts are deciding now.
+
+## Choosing a threshold
+
+0.5 is a default, not a decision. The eval report re-flags the same run at 0.2…0.9 — possible because every
+score is stored — and shows the trade: lower thresholds catch incidents sooner but open cases on honest merchants
+(analyst time); higher ones miss fraud (money). Pick where those two costs balance for your business.

@@ -103,12 +103,52 @@ async def test_new_merchant_blitz_is_caught(bundle):
     assert any("NEW_MERCHANT_HIGH_VALUE" in c["reasons"] for c in cases if c)
 
 
-async def test_redelivered_event_is_a_no_op(bundle, tmp_path):
+async def test_redelivered_flagged_event_resends_its_case_without_rescoring(bundle, tmp_path):
+    # The score is saved before the case is sent. If the send fails, Kafka redelivers
+    # the payment — and the case must go out again, or it is lost for good.
     s = make_scorer(bundle, {"b": 1000}, tmp_path)
     e = evt(1, "b", 3_000_000)
     first = await s.handle(e, 1010)
     second = await s.handle(e, 1010)
-    assert first is not None and second is None
+    assert first is not None and second is not None
+    assert (second["payment_id"], second["score"], second["reasons"]) == (first["payment_id"], first["score"], first["reasons"])
+    assert s.store.stats()["scored"] == 1                                  # scored once, not twice
+
+
+async def test_redelivered_unflagged_event_stays_quiet(bundle, tmp_path):
+    s = make_scorer(bundle, {"m": 0}, tmp_path)
+    for i in range(4):
+        await s.handle(evt(i, "m", 50_000), 600 + i * 60)
+    assert await s.handle(evt(2, "m", 50_000), 720) is None
+    assert s.store.stats()["scored"] == 4
+
+
+async def test_a_batch_scores_exactly_like_one_at_a_time(bundle, tmp_path):
+    rng = random.Random(5)
+    traffic = []
+    t = 1000.0
+    for i in range(120):
+        burst = 40 <= i < 70                                   # m3 fires 30 payments, 2 s apart
+        m = "m3" if burst else f"m{rng.randint(0, 9)}"
+        t += 2 if burst else 20
+        traffic.append((evt(i, m, 80_000 if burst else rng.randint(200, 3000) * 100), t))
+    created = {f"m{k}": 0 for k in range(10)}
+    one = make_scorer(bundle, created)
+    singles = [c for e, t in traffic if (c := await one.handle(e, t))]
+    many = make_scorer(bundle, created)
+    batched = []
+    for k in range(0, len(traffic), 25):
+        batched += await many.handle_many(traffic[k:k + 25])
+    strip = lambda cs: [(c["payment_id"], c["score"], c["reasons"]) for c in cs]
+    assert strip(batched) == strip(singles) and len(singles) > 5
+
+
+async def test_batch_skips_duplicates_and_malformed_events(bundle, tmp_path):
+    s = make_scorer(bundle, {"b": 1000}, tmp_path)
+    good = evt(1, "b", 3_000_000)
+    cases = await s.handle_many([(good, 1010), ({"merchantId": "b"}, 1011), (good, 1010),
+                                 ({"paymentId": "x", "merchantId": "b", "amountPaise": "lots"}, 1012)])
+    assert [c["payment_id"] for c in cases] == ["b-1"]
     assert s.store.stats()["scored"] == 1
 
 

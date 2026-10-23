@@ -100,3 +100,25 @@ async def test_real_redis_matches_memory():
         y = await red.compute(m, ts, amt, st, payment_id=f"p{i}")
         assert {k: round(v, 6) for k, v in x.items() if v == v} == {k: round(v, 6) for k, v in y.items() if v == v}
     await r.aclose()
+
+
+async def _batched_equals_sequential(state):
+    items = [(m, ts, amt, st, 0, f"p{i}") for i, (m, ts, amt, st) in enumerate(TRAFFIC)]
+    seq = FeatureBuilder(MemoryState())
+    expected = [await seq.compute(m, ts, amt, st, c, pid) for m, ts, amt, st, c, pid in items]
+    got = await FeatureBuilder(state).compute_many(items)          # one pipeline, same merchant repeated
+    clean = lambda fs: [{k: round(v, 6) for k, v in f.items() if v == v} for f in fs]
+    assert clean(got) == clean(expected)
+
+
+async def test_pipelined_batch_matches_one_at_a_time_fakeredis():
+    await _batched_equals_sequential(redis_state(fakeredis.FakeServer()))
+
+
+@real
+async def test_pipelined_batch_matches_one_at_a_time_real_redis():
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(os.environ["REDIS_TEST_URL"])
+    await r.flushdb()
+    await _batched_equals_sequential(RedisState(r, prefix="t3"))
+    await r.aclose()

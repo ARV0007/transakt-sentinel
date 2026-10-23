@@ -33,6 +33,7 @@ log = logging.getLogger("risk-scorer")
 KAFKA = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
 IN_TOPIC = os.environ.get("IN_TOPIC", "payment.settled")
 OUT_TOPIC = os.environ.get("OUT_TOPIC", "fraud.cases")
+MAX_BATCH = int(os.environ.get("MAX_BATCH", "200"))
 
 
 async def consume_forever(scorer, stop):
@@ -50,20 +51,27 @@ async def consume_forever(scorer, stop):
             await producer.start()
             log.info("consuming %s -> producing %s on %s", IN_TOPIC, OUT_TOPIC, KAFKA)
             delay = 2
-            async for msg in consumer:
-                try:
-                    event = json.loads(msg.value)
-                    case = await scorer.handle(event, msg.timestamp / 1000)
-                    if case:
-                        # Keyed by merchant: every case for one merchant lands on the
-                        # same partition, so the investigator sees them in order.
-                        await producer.send_and_wait(OUT_TOPIC, json.dumps(case).encode(),
-                                                     key=case["merchant_id"].encode())
-                except (ValueError, KeyError) as e:
-                    log.error("skipping malformed event at offset %s: %s", msg.offset, e)
+            while not stop.is_set():
+                # Up to MAX_BATCH messages per poll, scored together (see Scorer.handle_many).
+                polled = await consumer.getmany(timeout_ms=500, max_records=MAX_BATCH)
+                msgs = sorted((m for batch in polled.values() for m in batch), key=lambda m: m.timestamp)
+                if not msgs:
+                    continue
+                items = []
+                for msg in msgs:
+                    try:
+                        items.append((json.loads(msg.value), msg.timestamp / 1000))
+                    except ValueError as e:
+                        log.error("skipping malformed event at offset %s: %s", msg.offset, e)
+                cases = await scorer.handle_many(items)
+                for case in cases:
+                    # Keyed by merchant: every case for one merchant lands on the
+                    # same partition, so the investigator sees them in order.
+                    await producer.send(OUT_TOPIC, json.dumps(case).encode(), key=case["merchant_id"].encode())
+                await producer.flush()
+                # Committed only after the batch is scored and its cases are sent. A crash
+                # before this line redelivers the batch; already-scored payments are skipped.
                 await consumer.commit()
-                if stop.is_set():
-                    break
         except Exception as e:
             log.warning("Kafka unavailable (%s); retrying in %ss", e, delay)
             await asyncio.sleep(delay)
@@ -112,6 +120,7 @@ def health():
     m = app.state.scorer.model
     return {"status": "UP", "service": "risk-scorer", "model_version": m.version,
             "feature_state": type(app.state.scorer.features.state).__name__,
+            "retraining_gate": m.gate,
             "model_source": m.source, "threshold": m.threshold}
 
 

@@ -176,3 +176,25 @@ Five changes, each closing a gap a reviewer would find:
    safeguard would you add?
 5. MCP and A2A both look like "JSON over HTTP". What's the actual difference, and where does each appear here?
 6. The A2A caller gets back `HOLD_PAYOUT`. Has anything been held? Who decides?
+
+---
+
+## Chapter 10 — Faster, safer, and measurable (v1.3)
+
+- **Batching.** Kafka hands the scorer up to 200 payments at a time. It works out each one's features in order,
+  then asks the model about all of them at once — like a cashier ringing up a whole basket instead of walking to
+  the till for each item.
+- **Pipelining.** The Redis work for the whole batch goes in one trip, and Redis runs it in order, so the
+  answers are exactly what one-at-a-time would give.
+- **No lost cases.** If the scorer crashes after saving a score but before sending the case, the redelivered
+  payment now re-sends it. The investigator ignores repeats.
+- **A gate on learning.** A retrained model must pass an exam on the newest analyst decisions before it ships.
+- **A threshold table.** The eval report shows what 0.3 or 0.8 would have caught and cost.
+
+**Counter-questions**
+1. Why can't the features for a batch be computed in parallel, when the model scoring can?
+2. Pipelined Redis commands aren't a transaction. Why are the results still correct?
+3. The scorer now sometimes sends the same case twice. Why is that the *right* behaviour, and what makes it harmless?
+4. Why hold back the *newest* analyst decisions for the gate, not a random sample?
+5. An interviewer asks "how fast is it?" Give the numbers, the hardware, and the one thing that made the biggest difference.
+6. Your boss says "flag less, analysts are swamped." Which table do you open, and what do you tell them it will cost?

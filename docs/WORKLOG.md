@@ -213,3 +213,38 @@ Mac brought every container up healthy, bootstrap OK, 199 payments, 0 failed. 6/
 cases, 0 cases on normal merchants, precision 0.947 / recall 0.807, send→score p50 2.6 s. Every case carried
 specialist evidence, so the investigator → transakt-mcp bearer-token path worked, and the scorer ran on its
 Redis-backed history throughout.
+
+---
+
+## Day 4 — 23 Oct 2026 (evening) · v1.3: batched scoring, no lost cases, gated retraining
+
+**Built**
+- **Batched + pipelined scoring.** The consumer polls up to 200 messages (`getmany`), orders them by timestamp,
+  and `Scorer.handle_many` computes features in order, scores the batch in one model call, writes it in one SQLite
+  transaction, and does all its Redis work in one pipelined round trip. Benchmark (`scripts/bench_scorer.py`,
+  20,000 payments, one core of a 2-core VM): **memory 465 → 15,453/s; Redis 355 → 3,505/s.** Batched results are
+  identical to one-at-a-time — tested on fakeredis and real Redis.
+- **No lost cases.** A redelivered *flagged* payment re-sends its case from the stored score; malformed events in a
+  batch are skipped individually.
+- **Retraining gate.** Newest 25% of analyst decisions held out; a candidate ships only if it agrees with them at
+  least as well as the current model and keeps synthetic recall within 2 points. `/health` and
+  `./sentinel.sh retrain` report the verdict. Test: twelve mistaken dismissals of real fraud → rejected, and the
+  shipped model still catches it.
+- **Threshold sweep** in the eval report (0.2…0.9: flagged, precision, recall, incidents, honest merchants with a case).
+
+**Findings**
+1. *The first benchmark was wrong:* 70% of payments flagged, because it sent each merchant six payments a minute —
+   which *is* a velocity burst. Realistic traffic (~1/min/merchant) gives 0.2%. Benchmarks need realistic inputs or
+   they measure the wrong code path.
+2. *The model call dominates:* 0.69 ms for 1 row, 1.06 ms for 100 — a fixed cost. That one measurement is the whole
+   argument for batching.
+3. *A real at-least-once bug, present since v1.0:* score saved before the case is sent, and a redelivery was
+   skipped as "already scored" — so a crash in between lost the case. Found while rewriting the consumer loop.
+4. *The threshold barely matters on this run:* precision/recall are flat from 0.2 to 0.9 because scores cluster at
+   0 and 1. That is synthetic-data overconfidence, now visible in the report; real data would spread the scores.
+
+**Interview line**
+"I profiled the scoring path, found the model call had a fixed ~0.7 ms cost, and batched Kafka polls into one
+model call and one pipelined Redis round trip — 10× throughput with byte-identical results. Along the way I found
+and fixed an at-least-once bug that could lose a case, and put a gate in front of retraining so analysts' mistakes
+can't teach the model to miss fraud."

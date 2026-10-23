@@ -36,8 +36,11 @@ Transakt ──payment.settled──► risk-scorer ──fraud.cases──► i
   replicas and 200 concurrent payments keeps all 200; a naive read-then-write version kept 2.
 - **Agent-to-agent (A2A).** Other AI agents can discover Sentinel at `/.well-known/agent-card.json` and ask it
   to investigate a payment — they get a recommendation, a human still decides.
-- **Humans teach the model.** Analyst decisions export as labels; `./sentinel.sh retrain` folds them in. A test
-  shows a repeatedly dismissed pattern stops being flagged while real fraud is still caught.
+- **Humans teach the model — behind a gate.** Analyst decisions export as labels; `./sentinel.sh retrain` folds
+  them in, but a retrained model ships only if it agrees with the *newest* held-out decisions at least as well as
+  the current one and doesn't forget synthetic fraud. A test feeds it twelve mistaken dismissals: rejected.
+- **Batched, pipelined scoring.** The scorer scores a Kafka poll's worth of payments in one model call and one
+  Redis round trip — identical results to one-at-a-time, ~10× the throughput.
 - **Observable.** Prometheus metrics on every service and a provisioned Grafana dashboard: flag rate, scoring
   lag, recommendations, analyst overrides, MCP tool latency.
 - **Secured internals.** The MCP server holds admin credentials, so it requires a bearer token
@@ -82,6 +85,19 @@ v1.2 with MCP auth, Redis-backed history and monitoring, same outcome — 6/6, 0
 Velocity recall is the lowest by design: the first few payments of a burst *are* normal-looking,
 and the system flags it once the pace is unmistakable (first flag 14–22 s into the burst).
 Training data is synthetic, so treat these as a working baseline, not a production claim.
+
+## Performance
+
+`scripts/bench_scorer.py` pushes 20,000 payments through the real scoring path (features, model, SQLite,
+reason codes) on one core of a 2-core cloud VM:
+
+| History in | One payment at a time | Batches of 200 (as the consumer polls) |
+|---|---|---|
+| process memory | 465 / s | **15,453 / s** |
+| Redis (Lua script per payment) | 355 / s | **3,505 / s** (pipelined: one round trip per batch) |
+
+The model call has a fixed ~0.7 ms cost whether it scores 1 payment or 100, which is why batching pays.
+Batched and one-at-a-time produce identical scores — there's a test for that, against real Redis too.
 
 ## Run it locally
 

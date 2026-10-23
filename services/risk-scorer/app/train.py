@@ -123,13 +123,22 @@ def make_dataset(n=40_000, seed=13):
 
 FEEDBACK_WEIGHT = 25
 
+# The gate. A retrained model only ships if it earns it on decisions it never saw:
+# the newest HOLDOUT_SHARE of analyst decisions are held back as an exam. The
+# newest, because the question is "does this model agree with what analysts are
+# deciding NOW", and a random split would leak tomorrow into yesterday.
+HOLDOUT_SHARE = 0.25
+MIN_HOLDOUT = 4              # fewer than 2 x this many decisions: too few to judge, skip the gate
+MAX_RECALL_DROP = 0.02       # may not forget more than 2 points of synthetic fraud recall
+
 
 def load_feedback(path):
-    """Rows from the investigator's GET /feedback. A missing file means none yet."""
+    """Rows from the investigator's GET /feedback, oldest decision first. A
+    missing file means none yet."""
     if not path or not os.path.exists(path):
         return np.empty((0, len(FEATURE_ORDER))), np.empty(0, dtype=int)
     with open(path) as f:
-        rows = json.load(f)
+        rows = sorted(json.load(f), key=lambda r: r.get("decided_at") or 0)
     X = [[math.nan if r["features"].get(c) is None else float(r["features"][c]) for c in FEATURE_ORDER]
          for r in rows]
     y = [int(r["label"]) for r in rows]
@@ -147,19 +156,47 @@ def train(seed=13, feedback_path=None):
     X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.25, random_state=seed, stratify=y)
     X_fb, y_fb = load_feedback(feedback_path)
 
-    def fit(with_feedback):
+    def fit(X_extra=None, y_extra=None):
         # NaN-aware: "merchant age unknown" and "too little history for a ratio"
         # are information, not errors, and this model handles missing values natively.
         m = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.1, random_state=seed)
-        if with_feedback and len(y_fb):
-            m.fit(np.vstack([X_tr, X_fb]), np.concatenate([y_tr, y_fb]),
-                  sample_weight=np.concatenate([np.ones(len(y_tr)), np.full(len(y_fb), FEEDBACK_WEIGHT)]))
+        if y_extra is not None and len(y_extra):
+            m.fit(np.vstack([X_tr, X_extra]), np.concatenate([y_tr, y_extra]),
+                  sample_weight=np.concatenate([np.ones(len(y_tr)), np.full(len(y_extra), FEEDBACK_WEIGHT)]))
         else:
             m.fit(X_tr, y_tr)
         return m
 
-    model = fit(with_feedback=True)
-    baseline = fit(with_feedback=False) if len(y_fb) else model
+    def synthetic_recall(m):
+        return float(recall_score(y_te, (m.predict_proba(X_te)[:, 1] >= 0.5).astype(int)))
+
+    baseline = fit()
+    gate = {"gate": "no feedback"}
+    model = baseline
+    if len(y_fb) >= 2 * MIN_HOLDOUT:
+        n_hold = max(MIN_HOLDOUT, int(round(len(y_fb) * HOLDOUT_SHARE)))
+        X_old, y_old, X_new, y_new = X_fb[:-n_hold], y_fb[:-n_hold], X_fb[-n_hold:], y_fb[-n_hold:]
+        candidate = fit(X_old, y_old)
+        base_agree, cand_agree = agreement(baseline, X_new, y_new), agreement(candidate, X_new, y_new)
+        base_rec, cand_rec = synthetic_recall(baseline), synthetic_recall(candidate)
+        gate = {"holdout_decisions": n_hold,
+                "holdout_agreement_before": f"{base_agree}/{n_hold}",
+                "holdout_agreement_candidate": f"{cand_agree}/{n_hold}",
+                "synthetic_recall_before": round(base_rec, 4),
+                "synthetic_recall_candidate": round(cand_rec, 4)}
+        if cand_agree < base_agree:
+            gate["gate"] = (f"REJECTED: agrees with {cand_agree}/{n_hold} of the newest analyst decisions, "
+                            f"the current model {base_agree}/{n_hold}")
+        elif cand_rec < base_rec - MAX_RECALL_DROP:
+            gate["gate"] = (f"REJECTED: synthetic fraud recall would fall from {base_rec:.3f} to {cand_rec:.3f}")
+        else:
+            gate["gate"] = "passed"
+            # Validated on the old decisions; now learn from all of them, newest included.
+            model = fit(X_fb, y_fb)
+    elif len(y_fb):
+        gate = {"gate": f"skipped: {len(y_fb)} decisions, need {2 * MIN_HOLDOUT} to hold some back"}
+        model = fit(X_fb, y_fb)
+
     proba = model.predict_proba(X_te)[:, 1]
     pred = (proba >= 0.5).astype(int)
     metrics = {
@@ -170,13 +207,14 @@ def train(seed=13, feedback_path=None):
         "test_rows": int(len(y_te)),
         "fraud_share": round(float(y.mean()), 4),
         "feedback_rows": int(len(y_fb)),
+        **gate,
     }
+    used_feedback = model is not baseline
     if len(y_fb):
-        # In-sample, so optimistic: these are the very rows it trained on. It
-        # still answers the useful question — did the model take the hint?
+        # In-sample for the shipped model, so optimistic; the holdout figures above are the honest ones.
         metrics["agrees_with_analysts_before"] = f"{agreement(baseline, X_fb, y_fb)}/{len(y_fb)}"
         metrics["agrees_with_analysts_after"] = f"{agreement(model, X_fb, y_fb)}/{len(y_fb)}"
-    version = MODEL_VERSION + (f"+fb{len(y_fb)}" if len(y_fb) else "")
+    version = MODEL_VERSION + (f"+fb{len(y_fb)}" if used_feedback else "")
     return {"model": model, "feature_order": FEATURE_ORDER, "threshold": 0.5,
             "version": version, "metrics": metrics}
 
@@ -213,6 +251,8 @@ def main():
     args = ap.parse_args()
 
     bundle = train(feedback_path=args.feedback)
+    if str(bundle["metrics"].get("gate", "")).startswith("REJECTED"):
+        print(f"!! retrained model NOT shipped — {bundle['metrics']['gate']}. Keeping the current model.")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     sio.dump(bundle, args.out)
     print(f"saved {args.out}  metrics={json.dumps(bundle['metrics'])}")

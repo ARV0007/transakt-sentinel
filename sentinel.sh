@@ -119,7 +119,17 @@ cmd_retrain() {
   echo "• $n analyst decisions -> retraining the scorer (merchant history in Redis is kept)."
   compose up -d --build risk-scorer
   wait_http http://localhost:8002/health "risk-scorer"
-  curl -fsS http://localhost:8002/health; echo
+  # Training happens inside the image build, behind a gate that holds back the
+  # newest decisions (see app/train.py). The version says whether it shipped.
+  local health version gate
+  health=$(curl -fsS http://localhost:8002/health)
+  version=$(echo "$health" | "$PY" -c "import json,sys; print(json.load(sys.stdin)['model_version'])")
+  gate=$(echo "$health" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('retraining_gate',''))")
+  case "$version" in
+    *+fb*) echo "✓ Retrained model is live: $version (gate: $gate)" ;;
+    *)     echo "✗ The retrained model was not shipped; the synthetic-only model is live ($version)."
+           echo "  Gate: $gate" ;;
+  esac
 }
 
 cmd_simulate() { need "$PY" "Install it with: brew install python@3.12"; "$PY" -u simulator/simulate.py "$@"; }
