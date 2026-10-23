@@ -33,6 +33,10 @@ preflight() {
     cp .env.example .env
     echo "• Created .env from .env.example (add an HF token there to turn the LLM on)."
   fi
+  # Prometheus and Grafana read these straight from this folder and run as their
+  # own unprivileged users, so the files must be world-readable. Nothing secret
+  # lives in monitoring/ (secrets are only in .env, which stays private).
+  chmod -R a+rX monitoring
   # Random shared secrets, generated straight into .env and never printed:
   #   MCP_TOKEN  investigator -> transakt-mcp
   #   A2A_TOKEN  other agents -> the investigator's A2A endpoint

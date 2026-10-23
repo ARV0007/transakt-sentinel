@@ -198,6 +198,10 @@ whatever mode the files arrive with. Reproduced with Docker before fixing: the o
 "Permission denied" on a mode-600 file, the `--chown` shape reads it. New CI job builds all three images from a
 deliberately `chmod -R go-rwx` checkout and imports each service's code as the user it runs as.
 
+**Same trap, next in line:** Prometheus and Grafana bind-mount their config from the repo and run as their own
+users (`nobody`, 472), so owner-only config files would have crashed them too. `sentinel.sh` now makes
+`monitoring/` world-readable before starting; it holds no secrets (those live only in `.env`).
+
 **Also:** `sentinel.sh` now prints the logs of any container that exits during `up` — this run's failure only
 said `exited (1)` until that existed.
 
