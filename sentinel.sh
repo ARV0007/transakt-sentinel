@@ -64,7 +64,15 @@ wait_http() {   # url, name, seconds
 
 cmd_up() {
   preflight
-  compose up -d --build
+  if ! compose up -d --build; then
+    # Compose only says "exited (1)"; the reason is in the container's own log.
+    echo "✗ Start-up failed. Last log lines of every container that stopped:"
+    for svc in $(compose ps -a --status exited --format '{{.Service}}'); do
+      echo "----- $svc"
+      compose logs --no-color --tail=40 "$svc"
+    done
+    exit 1
+  fi
   wait_http http://localhost:8080/api/v1/health "Transakt" 240
   wait_http http://localhost:8002/health "risk-scorer"
   wait_http http://localhost:8003/health "investigator"
