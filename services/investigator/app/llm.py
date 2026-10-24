@@ -30,6 +30,16 @@ specialist checks. Recommend exactly one action:
 - ALLOW: the flag looks like a false positive.
 - NEEDS_MANUAL_REVIEW: the evidence is missing or contradictory.
 
+How to read the specialist findings:
+- Each specialist looks at the case from ONE angle. "signal": true means it found
+  a fraud pattern from that angle.
+- "signal": false only means that angle found nothing extra. It is NOT evidence
+  that the merchant is legitimate, so it does not contradict another specialist's
+  signal. One specialist with a clear signal is enough for HOLD_PAYOUT.
+- "Contradictory" means facts that point AWAY from fraud (for example a long,
+  steady payment history at this exact pace and amount), not a quiet specialist.
+- A specialist entry with an "error" gathered no evidence at all.
+
 Rules:
 - Use ONLY numbers that appear in the facts. Do not estimate or invent figures.
 - Amounts in the facts are given in paise and in rupees; quote rupees.
