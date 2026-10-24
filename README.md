@@ -65,13 +65,19 @@ recommendation, and the two buttons only a human can press.
 
 </details>
 
+The Grafana dashboard during a demo run — scoring, investigation and MCP tool calls, provisioned
+with the stack:
+
+![Grafana dashboard during a demo run](docs/images/grafana.png)
+
 A 2-minute walkthrough script is in [docs/DEMO.md](docs/DEMO.md).
 
 ## Results
 
 A real run on a MacBook Air: Transakt + Kafka + Postgres + Redis in Docker, 6 minutes of simulated
 traffic, 199 payments with 6 planted fraud incidents (`./sentinel.sh demo`, 23 Oct 2026; re-run on
-v1.2 with MCP auth, Redis-backed history and monitoring, same outcome — 6/6, 0 false cases):
+v1.2 with MCP auth, Redis-backed history and monitoring, and three times on 24 Oct with v1.3's batched
+Kafka loop — same outcome every time: 6/6, 0 false cases):
 
 | Metric | Result |
 |---|---|
@@ -124,9 +130,11 @@ curl -s localhost:8003/a2a -H "Authorization: Bearer $TOKEN" -H "A2A-Version: 1.
   "params":{"message":{"messageId":"1","role":"ROLE_USER","parts":[{"data":{"payment_id":"<id>"}}]}}}'
 ```
 
-**Turn the LLM on (optional):** put a Hugging Face token in `.env` as `LLM_API_KEY`, then
-`./sentinel.sh up` again. Without one, deterministic rules write the recommendations and
-everything else works the same. **Tracing:** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`.
+**Turn the LLM on (optional):** any OpenAI-compatible provider works — set `LLM_API_KEY`,
+`LLM_BASE_URL` and `LLM_MODEL` in `.env`, then `./sentinel.sh up` again. Hugging Face Inference
+Providers is the default; Groq's free tier works too (`https://api.groq.com/openai/v1`,
+`llama-3.3-70b-versatile`). Without a key — or if the provider fails mid-run — deterministic
+rules write the recommendation and the case records why the LLM was skipped. **Tracing:** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`.
 
 ## Tests
 

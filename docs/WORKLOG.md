@@ -261,3 +261,27 @@ Apache and Maven Central are all blocked there):
 when `send()` was called. A planted mutation (removing the re-send-on-redelivery fix) then *passed* the crash test.
 Real producers buffer until `flush()`; once the fake did the same, the mutation failed the test, as it should.
 Every new test here was checked the same way — plant the bug, watch it fail, restore.
+
+## Day 5 — 24 Oct 2026 · v1.3 verified on real Kafka; the LLM provider saga
+
+**v1.3 on real Docker.** Three `./sentinel.sh demo` runs on the MacBook with the batched consumer loop (first time
+it met a real broker). Every run: **6/6 incidents caught, all `HOLD_PAYOUT`, 0 cases on the 20 normal merchants**,
+precision 0.946–0.948, recall 0.795–0.83, send→score p50 2.5–2.9 s. Same as v1.2 — batching changed speed, not
+answers, which is what the identical-scores test promised.
+
+**Grafana screenshot** added to the README (all three dashboard rows: scoring, investigation, MCP).
+
+**The LLM still hasn't written a recommendation — and every failure was handled correctly.**
+1. Hugging Face token → `402 You have no remaining credits`. The free monthly credits were gone.
+2. Switched `.env` to Groq. TextEdit saved an older open copy over the edit, so the Groq key was sent to Hugging
+   Face's URL → `401 Invalid username or password`. Lesson: an editor with the file already open can undo a change
+   made underneath it.
+3. Groq with the right URL → `404 model_not_found` for both `llama-3.1-8b-instant` and `llama-3.3-70b-versatile`,
+   though both are listed as production models. The key authenticates, so this is on the account side (model
+   access); still open.
+
+In all three, the case still got a recommendation from the rules, the failure reason was stored on the case
+(`llm_error`), the eval counted it (`failed→rules 6`) and Grafana showed it ("HOLD_PAYOUT · rules (llm failed)").
+Nothing was lost and nothing was silent — the fallback design paid for itself on its first real outing.
+
+**Docs:** README and `.env.example` now say any OpenAI-compatible provider works, with Groq as the worked example.
