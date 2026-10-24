@@ -198,3 +198,28 @@ Five changes, each closing a gap a reviewer would find:
 4. Why hold back the *newest* analyst decisions for the gate, not a random sample?
 5. An interviewer asks "how fast is it?" Give the numbers, the hardware, and the one thing that made the biggest difference.
 6. Your boss says "flag less, analysts are swamped." Which table do you open, and what do you tell them it will cost?
+
+---
+
+## Chapter 11 — The first real LLM run (Day 5)
+
+- **Any OpenAI-compatible provider plugs in.** Sentinel talks the "OpenAI chat" format, which Hugging Face, Groq
+  and many others speak. Switching provider is three lines of `.env` — key, address, model — and no code.
+- **Every failure fell back safely.** Out of credits (402), wrong password (401), model not available (404): each
+  time the rules wrote the recommendation, and the case recorded *why* the LLM was skipped. Like a hospital where,
+  if the specialist doesn't pick up, the duty doctor still sees the patient and writes "specialist unreachable" on
+  the chart.
+- **The LLM's first mistake was reasoning, not facts.** It invented no numbers (the grounding check passed), but it
+  read "the merchant-profile check found nothing" as "the merchant looks honest". A smoke detector that stays
+  quiet in the kitchen doesn't prove there's no fire in the bedroom.
+- **The fix was a sentence in the prompt**, and the proof was re-running the same scenario: disagreements with the
+  rules went from 2 to 0.
+
+**Counter-questions**
+1. The LLM's answer was `NEEDS_MANUAL_REVIEW`, which still sends the case to a human. Why count it as a bug?
+2. The grounding check passed on both wrong answers. What *kind* of error can it catch, and what kind can't it?
+3. Which number in the eval report caught the problem, and why did it need the rules as a baseline?
+4. You changed the prompt and the next run was perfect. What would make you trust that more than one run does?
+5. Groq returned 404 for a model its own docs listed. How did you find out the real cause, and what did the error
+   text alone let you rule out?
+6. Why must the rules fallback stay even now that the LLM works?

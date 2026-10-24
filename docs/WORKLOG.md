@@ -277,11 +277,33 @@ answers, which is what the identical-scores test promised.
    Face's URL → `401 Invalid username or password`. Lesson: an editor with the file already open can undo a change
    made underneath it.
 3. Groq with the right URL → `404 model_not_found` for both `llama-3.1-8b-instant` and `llama-3.3-70b-versatile`,
-   though both are listed as production models. The key authenticates, so this is on the account side (model
-   access); still open.
+   though both are listed as production models. Signed in to the Groq console: under Settings → Limits this
+   account simply has no Llama models — its chat models are `openai/gpt-oss-120b`, `gpt-oss-20b` and a few
+   others. Switched to `openai/gpt-oss-120b`.
 
 In all three, the case still got a recommendation from the rules, the failure reason was stored on the case
 (`llm_error`), the eval counted it (`failed→rules 6`) and Grafana showed it ("HOLD_PAYOUT · rules (llm failed)").
 Nothing was lost and nothing was silent — the fallback design paid for itself on its first real outing.
 
 **Docs:** README and `.env.example` now say any OpenAI-compatible provider works, with Groq as the worked example.
+
+**The first real LLM run — and the first prompt bug.** With `gpt-oss-120b` the LLM wrote all 6 recommendations
+with zero grounding warnings, but both velocity bursts came back `NEEDS_MANUAL_REVIEW` (eval: *disagreed with
+rules 2*, *HOLD_PAYOUT 4/6*). Its rationale explained why: "Merchant profile analyst found no fraud signals …
+Conflicting signals mean the evidence is contradictory." It was reading a quiet specialist (`signal: false`) as
+evidence *for* the merchant.
+
+Fix (prompt only, `a289367`): the system prompt now says what `signal` means — false is "this angle found
+nothing extra", not "the merchant is clean"; one clear signal is enough to hold; "contradictory" means facts that
+point away from fraud. Re-ran the demo: **LLM 6/6, all `HOLD_PAYOUT`, 0 disagreements, 0 grounding warnings.**
+The rationales now say it outright: "the velocity analyst's false signal does not contradict."
+
+**Why this is the useful part.** The eval already counted *LLM vs rules disagreements* — that column is what
+caught a reasoning bug that looked fine case by case (each rationale was polite, grounded and plausible). Without
+a baseline to disagree with, two wrong recommendations would have shipped as "manual review" and nobody would have
+noticed.
+
+**Interview line**
+"The first time a real LLM ran, my eval flagged it disagreeing with the rules on 2 of 6 cases. Reading the
+rationales showed it treated an absent signal as counter-evidence. I fixed the prompt, re-ran the same scenario,
+and disagreements went to zero — measured, not eyeballed."

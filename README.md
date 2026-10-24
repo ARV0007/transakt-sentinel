@@ -87,10 +87,16 @@ Kafka loop — same outcome every time: 6/6, 0 false cases):
 | Recall by pattern | new-merchant blitz 24/24 · amount spike 4/4 · velocity burst 44/60 |
 | Payment → risk score | 2.7 s median, 5.0 s p95 (mostly Transakt's 5 s outbox sweep); the model itself scores in ~1 ms |
 | Traffic that reached the LLM step | 3% (one case per incident, not one per payment) |
+| LLM recommendations (Groq, `gpt-oss-120b`) | **6 / 6** written by the LLM, 0 invented numbers, 0 disagreements with the rules |
 
 Velocity recall is the lowest by design: the first few payments of a burst *are* normal-looking,
 and the system flags it once the pace is unmistakable (first flag 14–22 s into the burst).
 Training data is synthetic, so treat these as a working baseline, not a production claim.
+
+What the LLM wrote for one of the velocity bursts (every number in it is checked against the evidence):
+
+> Velocity analyst flagged a fraud pattern (signal: true) with 9 payments in 2 minutes and 12 payments in the
+> last 30 minutes, indicating a burst. This single positive signal is sufficient to hold the merchant's settlement.
 
 ## Performance
 
@@ -133,7 +139,7 @@ curl -s localhost:8003/a2a -H "Authorization: Bearer $TOKEN" -H "A2A-Version: 1.
 **Turn the LLM on (optional):** any OpenAI-compatible provider works — set `LLM_API_KEY`,
 `LLM_BASE_URL` and `LLM_MODEL` in `.env`, then `./sentinel.sh up` again. Hugging Face Inference
 Providers is the default; Groq's free tier works too (`https://api.groq.com/openai/v1`,
-`llama-3.3-70b-versatile`). Without a key — or if the provider fails mid-run — deterministic
+`openai/gpt-oss-120b` — check which models your account lists). Without a key — or if the provider fails mid-run — deterministic
 rules write the recommendation and the case records why the LLM was skipped. **Tracing:** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`.
 
 ## Tests
