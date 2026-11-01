@@ -7,6 +7,21 @@ Every settled payment is scored by a fast ML model; risky ones are investigated 
 LangGraph agent that gathers evidence through **MCP** tools and writes a recommendation
 with an LLM — then **stops and waits for a human analyst**. Transakt itself is not modified.
 
+## See it working
+
+**[Watch a recorded run →](https://arv0007.github.io/sentinel/)** 150 payments from the simulator, with
+fraud planted in them, replayed in your browser: see which payments the model flags, open each case the
+agent built (which specialists ran, which MCP tools they called, what they found), and make the
+analyst's call yourself. Then see how the run was graded against the planted fraud: 6 of 6 incidents
+caught, 0 cases on honest merchants.
+
+![The replay: payments streaming in, flags, and an opened fraud case](https://arv0007.github.io/assets/demo/sentinel-replay.gif)
+
+<sub>A replay rather than a live deploy: Sentinel needs Kafka and three services running, which free
+hosting can't keep up. The recording is a real run of this repo's simulator, scorer, agent and MCP server
+through `e2e/run_e2e.py`, which stands in for Kafka and the Java gateway. To run the whole thing live
+yourself, see [Run it locally](#run-it-locally).</sub>
+
 `Python 3.12` · `LangGraph` · `LangChain` · `MCP` · `A2A` · `FastAPI` · `Kafka` · `Redis` · `scikit-learn` · `Hugging Face` · `LangSmith` · `Prometheus` · `Grafana` · `Docker`
 
 ```
